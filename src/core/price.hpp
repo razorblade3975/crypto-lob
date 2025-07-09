@@ -4,11 +4,9 @@
 #include <string>
 #include <string_view>
 #include <concepts>
-#include <type_traits>
 #include <format>
 #include <compare>
 #include <limits>
-#include <cmath>
 #include <algorithm>
 
 namespace crypto_lob::core {
@@ -58,6 +56,23 @@ private:
         }
         
         return {a_normalized, b_normalized};
+    }
+
+    // Helper function to convert __int128 to string
+    static std::string int128_to_string(value_type value) {
+        if (value == 0) return "0";
+        
+        bool negative = value < 0;
+        if (negative) value = -value;
+        
+        std::string result;
+        while (value > 0) {
+            result = char('0' + (value % 10)) + result;
+            value /= 10;
+        }
+        
+        if (negative) result = "-" + result;
+        return result;
     }
 
 public:
@@ -111,13 +126,11 @@ public:
             }
         }
         
-        // Determine scale based on the parsed value
-        double temp_value = static_cast<double>(integer_part);
-        if (decimal_places > 0) {
-            temp_value += static_cast<double>(fractional_part) / std::pow(10, decimal_places);
-        }
-        
-        int64_t scale = determine_scale(temp_value);
+        // Determine scale based on the string input directly
+        // If integer part is 0 and we have decimal places, use LOW_SCALE
+        // Otherwise use HIGH_SCALE
+        bool is_less_than_one = (integer_part == 0 && has_decimal);
+        int64_t scale = is_less_than_one ? LOW_SCALE : HIGH_SCALE;
         
         // Calculate final value
         value_type final_value = integer_part * scale;
@@ -158,7 +171,8 @@ public:
         std::string result;
         if (negative) result += "-";
         
-        result += std::to_string(static_cast<int64_t>(integer_part));
+        // Convert __int128 to string manually
+        result += int128_to_string(integer_part);
         
         if (fractional_part > 0) {
             result += ".";
@@ -167,7 +181,7 @@ public:
             int decimal_places = (scale_ == HIGH_SCALE) ? 8 : 18;
             
             // Convert fractional part to string with leading zeros
-            std::string frac_str = std::to_string(static_cast<int64_t>(fractional_part));
+            std::string frac_str = int128_to_string(fractional_part);
             
             // Pad with leading zeros if necessary
             while (frac_str.length() < decimal_places) {
@@ -202,16 +216,8 @@ public:
         return Price(value_ * multiplier, scale_);
     }
     
-    constexpr Price operator*(double multiplier) const noexcept {
-        return Price(static_cast<value_type>(value_ * multiplier), scale_);
-    }
-    
     constexpr Price operator/(int64_t divisor) const noexcept {
         return Price(value_ / divisor, scale_);
-    }
-    
-    constexpr Price operator/(double divisor) const noexcept {
-        return Price(static_cast<value_type>(value_ / divisor), scale_);
     }
     
     // Comparison operators
@@ -277,43 +283,6 @@ using Quantity = Price;
 // Order ID type
 using OrderId = uint64_t;
 
-// Timestamp type (microseconds since epoch)
-using Timestamp = uint64_t;
-
-// Exchange identifier
-enum class ExchangeId : uint8_t {
-    BINANCE = 0,
-    KUCOIN = 1,
-    OKX = 2
-};
-
-// Market side
-enum class Side : uint8_t {
-    BUY = 0,
-    SELL = 1
-};
-
-// Order book update type
-enum class UpdateType : uint8_t {
-    SNAPSHOT = 0,
-    DELTA = 1
-};
-
-// Market event type
-enum class EventType : uint8_t {
-    TRADE = 0,
-    TOP_OF_BOOK = 1,
-    LEVEL_UPDATE = 2
-};
-
-// Instrument identifier
-struct InstrumentId {
-    ExchangeId exchange;
-    std::string symbol;  // e.g., "BTCUSDT"
-    
-    constexpr auto operator<=>(const InstrumentId& other) const noexcept = default;
-};
-
 // Concepts for type safety
 template<typename T>
 concept PriceType = std::same_as<T, Price>;
@@ -323,20 +292,6 @@ concept QuantityType = std::same_as<T, Quantity>;
 
 template<typename T>
 concept OrderIdType = std::same_as<T, OrderId>;
-
-template<typename T>
-concept TimestampType = std::same_as<T, Timestamp>;
-
-// Utility functions
-Timestamp current_timestamp() noexcept;  // Implementation in .cpp file
-
-// Hash function for InstrumentId to use in unordered containers
-struct InstrumentIdHash {
-    std::size_t operator()(const InstrumentId& id) const noexcept {
-        return std::hash<std::string>{}(id.symbol) ^ 
-               (static_cast<std::size_t>(id.exchange) << 1);
-    }
-};
 
 }  // namespace crypto_lob::core
 
@@ -349,18 +304,5 @@ struct std::formatter<crypto_lob::core::Price> {
     
     auto format(const crypto_lob::core::Price& price, std::format_context& ctx) const {
         return std::format_to(ctx.out(), "{}", price.to_string());
-    }
-};
-
-// Formatter for Side enum
-template<>
-struct std::formatter<crypto_lob::core::Side> {
-    constexpr auto parse(std::format_parse_context& ctx) {
-        return ctx.begin();
-    }
-    
-    auto format(const crypto_lob::core::Side& side, std::format_context& ctx) const {
-        return std::format_to(ctx.out(), "{}", 
-                            side == crypto_lob::core::Side::BUY ? "BUY" : "SELL");
     }
 };

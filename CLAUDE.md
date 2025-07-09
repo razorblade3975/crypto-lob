@@ -67,7 +67,7 @@ The system is architected as a single-process, multi-threaded application with s
 - **Comprehensive statistics** for monitoring and tuning
 - **Configurable depletion policies** (throw/terminate/resize)
 
-### Fixed-Point Price System (src/core/types.hpp)
+### Fixed-Point Price System (src/core/price.hpp)
 
 **Adaptive Precision Price Representation** for cryptocurrency price ranges:
 
@@ -81,6 +81,34 @@ The system is architected as a single-process, multi-threaded application with s
 - **High-value**: $1,000,000+ (Bitcoin) with 8 decimal places
 - **Micro-cap**: $0.000000001+ (meme coins) with 18 decimal places
 - **Specialized constructors**: from_satoshi(), from_wei() for blockchain units
+
+### Cache Alignment Infrastructure (src/core/cache.hpp)
+
+**Centralized Cache Management** for optimal performance:
+
+- **CACHELINE_SIZE constant**: Centralized 64-byte alignment to prevent magic numbers
+- **Alignment utilities**: `align_to_cacheline()`, `is_cacheline_aligned()` with bit-math optimization
+- **Template wrappers**: `aligned_64<T>` for alignment, `sized_64<T>` for full cache-line sizing
+- **Prefetch support**: Software prefetch hints with temporal locality control
+- **Branch prediction**: `likely`/`unlikely` macros with header conflict protection
+- **Memory barriers**: Portable compiler fence using `std::atomic_signal_fence`
+
+### Wait-Free Inter-Thread Communication (src/core/spsc_ring.hpp)
+
+**Production-Ready SPSC Ring Buffer** using Disruptor pattern:
+
+- **Single-producer/single-consumer**: Wait-free operation with no locks
+- **Disruptor sequence numbers**: Per-slot sequences prevent ABA issues and wraparound bugs
+- **Cache-line aligned slots**: 64-byte slots prevent false sharing
+- **Power-of-two capacity**: Fast modulo via bit-mask operations
+- **Aligned memory allocation**: Cache-line aligned storage with proper cleanup
+- **Monitoring support**: Accurate `size()`, `fill_ratio()` for back-pressure detection
+
+**Key Features:**
+- **One atomic load per operation** on hot path (producer and consumer)
+- **Sequence-based state management**: Slots cycle between free/written states
+- **64-bit counter safety**: Supports ~5×10^19 operations before wraparound
+- **Ultra-low latency**: Optimized for sub-microsecond operation times
 
 ### Technology Stack
 
@@ -212,9 +240,12 @@ ctest -V
 - [x] Basic build system and project structure
 
 ### Phase 2: Data Structures (In Progress)
-- [ ] Intrusive containers for cache-friendly data structures
-- [ ] Lock-free queues for inter-thread communication
-- [ ] Configuration system with TOML++ integration
+- [x] Cache alignment infrastructure with centralized constants
+- [x] Wait-free SPSC ring buffer using Disruptor pattern
+- [ ] Flat hash map for O(1) order ID lookups
+- [ ] Dense adaptive arrays with tick bucketing for price levels
+- [ ] Intrusive FIFO order lists with cache-line optimization
+- [ ] Complete order book assembly
 
 ### Phase 3: Networking Layer
 - [ ] WebSocket client with Boost.Beast
