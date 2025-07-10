@@ -23,6 +23,22 @@ conandata.yml
 conanbuildinfo.*
 conaninfo.txt
 graph_info.json
+conan_toolchain.cmake
+conanbuild*.sh
+conanrun*.sh
+deactivate_*.sh
+conandeps_legacy.cmake
+CMakeUserPresets.json
+CMakePresets.json
+
+# Conan-generated CMake files
+*Config.cmake
+*ConfigVersion.cmake
+*Targets.cmake
+*-Target-*.cmake
+*-data.cmake
+Find*.cmake
+cmakedeps_macros.cmake
 
 # Compiled Object files
 *.slo
