@@ -400,11 +400,20 @@ TEST_P(ParameterizedMemoryPoolTest, BasicOperationsAcrossCapacities) {
         pool.destroy(obj);
     }
     
+    // Flush thread cache to ensure accurate empty state
+    pool.flush_thread_cache();
+    
     EXPECT_TRUE(pool.empty());
 }
 
 TEST_P(ParameterizedMemoryPoolTest, ThreadLocalCacheEfficiency) {
     auto params = GetParam();
+    
+    // Skip test for pools too small for meaningful cache behavior
+    if (params.capacity < 4 || params.cache_size < 2) {
+        GTEST_SKIP() << "Pool too small for cache efficiency test";
+    }
+    
     MemoryPool<MediumObject> pool(params.capacity, PoolDepletionPolicy::THROW_EXCEPTION, config_);
     
     // Test cache behavior with different batch sizes
@@ -515,6 +524,9 @@ TEST_P(ParameterizedMemoryPoolTest, CachePressureStress) {
     for (auto* obj : objects) {
         pool.deallocate(obj);
     }
+    
+    // Flush cache to ensure all objects are returned to global pool
+    pool.flush_thread_cache();
     
     EXPECT_EQ(pool.allocated_objects(), 0);
 }

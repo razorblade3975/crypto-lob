@@ -16,6 +16,7 @@
 #include <array>
 #include <thread>
 #include <chrono>
+#include <vector>
 
 // Linux-specific headers for huge pages
 #include <sys/mman.h>
@@ -246,9 +247,22 @@ struct TaggedPointer128 {
 template<Allocatable T>
 class MemoryPool;
 
+// Base class for intrusive linked list of thread-local caches
+class ThreadLocalCacheBase {
+public:
+    ThreadLocalCacheBase* next_ = nullptr;
+    
+    virtual ~ThreadLocalCacheBase() = default;
+    virtual void flush_to_pool() = 0;
+    virtual bool belongs_to_pool(void* pool) const = 0;
+};
+
+// Thread-local head of the intrusive list
+inline thread_local ThreadLocalCacheBase* tls_cache_list_head = nullptr;
+
 // Thread-local cache for ultra-fast allocation/deallocation
 template<Allocatable T>
-class ThreadLocalCache {
+class ThreadLocalCache : public ThreadLocalCacheBase {
 private:
     using Pool = MemoryPool<T>;
     
@@ -334,7 +348,8 @@ private:
 
 public:
     explicit ThreadLocalCache(Pool* pool, const CacheConfig& config = CacheConfig{})
-        : cache_(std::make_unique<void*[]>(config.cache_size))
+        : ThreadLocalCacheBase{}
+        , cache_(std::make_unique<void*[]>(config.cache_size))
         , cache_size_(config.cache_size)
         , batch_size_(config.batch_size)
         , current_size_(0)
@@ -346,6 +361,9 @@ public:
         , cache_misses_(0)
         , last_shrink_check_(std::chrono::steady_clock::now())
         , shrink_interval_(config.shrink_interval) {
+        // Add to thread-local intrusive list
+        next_ = tls_cache_list_head;
+        tls_cache_list_head = this;
     }
     
     ~ThreadLocalCache() {
@@ -353,6 +371,16 @@ public:
             flush_all_to_global();
         }
         // If pool is shutting down, abandon cached objects
+        
+        // Remove from thread-local intrusive list
+        ThreadLocalCacheBase** current = &tls_cache_list_head;
+        while (*current) {
+            if (*current == this) {
+                *current = next_;
+                break;
+            }
+            current = &((*current)->next_);
+        }
     }
     
     // Non-copyable, non-movable
@@ -464,6 +492,16 @@ public:
         }
     }
     
+    // Override from base class
+    void flush_to_pool() override {
+        flush_all_to_global();
+    }
+    
+    // Override from base class
+    bool belongs_to_pool(void* pool) const override {
+        return pool == global_pool_;
+    }
+    
     // Cache statistics
     [[nodiscard]] size_t size() const noexcept { return current_size_; }
     [[nodiscard]] size_t capacity() const noexcept { return cache_size_; }
@@ -475,7 +513,47 @@ public:
     [[nodiscard]] size_t total_deallocations() const noexcept { return deallocation_count_; }
 };
 
+// Helper to get or create thread-local cache for a specific pool
+template<Allocatable T>
+static ThreadLocalCache<T>& get_thread_cache(MemoryPool<T>* pool, const CacheConfig& config) {
+    // Walk the intrusive list to find existing cache
+    for (ThreadLocalCacheBase* node = tls_cache_list_head; node; node = node->next_) {
+        if (node->belongs_to_pool(pool)) {
+            return *static_cast<ThreadLocalCache<T>*>(node);
+        }
+    }
+    
+    // Not found - create new cache with proper cleanup
+    // Use a thread_local vector to ensure cleanup at thread exit
+    thread_local std::vector<std::unique_ptr<ThreadLocalCache<T>>> cache_storage;
+    
+    // Reserve space on first use to avoid reallocations
+    if (cache_storage.empty()) {
+        cache_storage.reserve(8);  // Most threads use few pools
+    }
+    
+    cache_storage.emplace_back(std::make_unique<ThreadLocalCache<T>>(pool, config));
+    return *cache_storage.back();
+}
+
 // Lock-free global memory pool
+//
+// Thread Safety & Shutdown Requirements:
+// - All methods are thread-safe for concurrent access
+// - The pool MUST outlive all threads that use it
+// - Before destroying the pool, ensure all worker threads are joined
+// - Failing to join threads before destruction causes use-after-free
+//
+// Example usage:
+//   MemoryPool<Order> pool(10000);
+//   std::vector<std::thread> workers;
+//   // ... create and start worker threads ...
+//   
+//   // Shutdown sequence:
+//   stop_flag.store(true);           // Signal workers to stop
+//   for (auto& t : workers) t.join(); // Wait for all threads
+//   // Pool destructor can now safely run
+//
 template<Allocatable T>
 class MemoryPool {
 private:
@@ -615,8 +693,18 @@ public:
         // Memory fence to ensure all threads see the shutdown flag
         std::atomic_thread_fence(std::memory_order_seq_cst);
         
-        // Fix #7: Remove unnecessary sleep in destructor
-        // Note: Applications should ensure worker threads are destroyed before the pool
+        // CRITICAL: Application must ensure all worker threads are joined before
+        // destroying the pool. Thread-local caches in other threads may still
+        // hold pointers into this pool's memory. Destroying the pool while
+        // worker threads are active will cause use-after-free errors.
+        //
+        // Correct shutdown sequence:
+        // 1. Signal worker threads to stop
+        // 2. Join all worker threads
+        // 3. Destroy the memory pool
+        //
+        // In debug builds, we could add a check:
+        // assert(/* all threads using this pool are joined */);
     }
     
     // Non-copyable, non-movable for thread safety
@@ -698,26 +786,26 @@ public:
     
     // High-level allocation interface (uses thread-local caching)
     [[clang::always_inline]] [[nodiscard]] T* allocate() {
-        thread_local ThreadLocalCache<T> cache(this, cache_config_);
+        auto& cache = get_thread_cache(this, cache_config_);
         return cache.allocate();
     }
     
     // High-level deallocation interface (uses thread-local caching)
     [[clang::always_inline]] void deallocate(T* ptr) {
-        thread_local ThreadLocalCache<T> cache(this, cache_config_);
+        auto& cache = get_thread_cache(this, cache_config_);
         cache.deallocate(ptr);
     }
     
     // Construct object in allocated memory
     template<typename... Args>
     [[nodiscard]] T* construct(Args&&... args) {
-        thread_local ThreadLocalCache<T> cache(this, cache_config_);
+        auto& cache = get_thread_cache(this, cache_config_);
         return cache.construct(std::forward<Args>(args)...);
     }
     
     // Destroy and deallocate object
     void destroy(T* ptr) {
-        thread_local ThreadLocalCache<T> cache(this, cache_config_);
+        auto& cache = get_thread_cache(this, cache_config_);
         cache.destroy(ptr);
     }
     
@@ -737,6 +825,16 @@ public:
     
     [[nodiscard]] bool empty() const noexcept { return allocated_objects() == 0; }
     [[nodiscard]] bool full() const noexcept { return allocated_objects() == object_capacity(); }
+    
+    // Force flush of current thread's cache - useful for testing
+    void flush_thread_cache() {
+        // Walk the intrusive list and flush all caches belonging to this pool
+        for (ThreadLocalCacheBase* node = tls_cache_list_head; node; node = node->next_) {
+            if (node->belongs_to_pool(this)) {
+                node->flush_to_pool();
+            }
+        }
+    }
     
     // Get cache configuration
     [[nodiscard]] const CacheConfig& cache_config() const noexcept { return cache_config_; }
