@@ -1,0 +1,46 @@
+{
+    "name": "Crypto LOB Development",
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "crypto-lob-dev",
+    "workspaceFolder": "/workspace",
+    "shutdownAction": "stopCompose",
+    
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "ms-vscode.cpptools-extension-pack",
+                "twxs.cmake",
+                "ms-vscode.hexeditor",
+                "vadimcn.vscode-lldb"
+            ],
+            "settings": {
+                "C_Cpp.default.cppStandard": "c++20",
+                "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+                "C_Cpp.default.compilerPath": "/usr/bin/g++",
+                "cmake.buildDirectory": "${workspaceFolder}/build",
+                "cmake.configureOnOpen": true
+            }
+        }
+    },
+    
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "installOhMyZsh": true,
+            "upgradePackages": true
+        }
+    },
+    
+    "postCreateCommand": "cd build && conan install .. --build=missing && cmake -DCMAKE_BUILD_TYPE=Release ..",
+    
+    "mounts": [
+        "source=/dev/hugepages,target=/dev/hugepages,type=bind"
+    ],
+    
+    "runArgs": [
+        "--privileged",
+        "--ulimit", "memlock=-1:-1"
+    ]
+}

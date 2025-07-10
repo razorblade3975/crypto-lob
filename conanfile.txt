@@ -10,12 +10,8 @@ CMakeDeps
 CMakeToolchain
 
 [options]
-boost:shared=False
-simdjson:shared=False
-tomlplusplus:shared=False
-gtest:shared=False
-benchmark:shared=False
+boost/*:shared=False
+simdjson/*:shared=False
+gtest/*:shared=False
+benchmark/*:shared=False
 
-[imports]
-bin, *.dll -> ./bin
-bin, *.dylib* -> ./bin

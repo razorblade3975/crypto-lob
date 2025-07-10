@@ -2,7 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <new>
+#include <new>      // For std::hardware_destructive_interference_size
 #include <array>
 #include <atomic>
 
@@ -46,7 +46,8 @@ struct CACHE_ALIGNED cache_pad {
 }
 
 // Check if pointer is cache line aligned
-[[nodiscard]] constexpr bool is_cacheline_aligned(const void* ptr) noexcept {
+// Note: Cannot be constexpr because reinterpret_cast is not allowed in constant expressions
+[[nodiscard]] inline bool is_cacheline_aligned(const void* ptr) noexcept {
     return (reinterpret_cast<std::uintptr_t>(ptr) & (CACHELINE_SIZE - 1)) == 0;
 }
 
@@ -62,9 +63,21 @@ enum class PrefetchHint : int {
 // addr: Memory address to prefetch
 // hint: Temporal locality hint for the CPU cache hierarchy
 inline void prefetch(const void* addr, PrefetchHint hint = PrefetchHint::READ_TEMPORAL) noexcept {
-    __builtin_prefetch(static_cast<const char*>(addr), 
-                      (hint == PrefetchHint::WRITE_TEMPORAL || hint == PrefetchHint::WRITE_NON_TEMPORAL) ? 1 : 0,
-                      static_cast<int>(hint));
+    // __builtin_prefetch requires compile-time constant arguments, so we use a switch
+    switch (hint) {
+        case PrefetchHint::READ_TEMPORAL:
+            __builtin_prefetch(static_cast<const char*>(addr), 0, 3);
+            break;
+        case PrefetchHint::READ_NON_TEMPORAL:
+            __builtin_prefetch(static_cast<const char*>(addr), 0, 0);
+            break;
+        case PrefetchHint::WRITE_TEMPORAL:
+            __builtin_prefetch(static_cast<const char*>(addr), 1, 1);
+            break;
+        case PrefetchHint::WRITE_NON_TEMPORAL:
+            __builtin_prefetch(static_cast<const char*>(addr), 1, 2);
+            break;
+    }
 }
 
 // Hardware-specific cache line size detection (runtime)

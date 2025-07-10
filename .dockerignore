@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+cmake-build-*/
+.cache/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+
+# Documentation (not needed in container)
+docs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Conan
+.conan/
+.conan2/

@@ -113,7 +113,9 @@ The system is architected as a single-process, multi-threaded application with s
 ### Technology Stack
 
 - **Language**: C++20 (leveraging coroutines, constexpr, templates, concepts)
-- **Build System**: CMake with Conan package management
+- **Compiler**: Clang 17+ (see Compiler Choice section below)
+- **Build System**: CMake 3.20+ with Conan 2.0+ package management
+  - Migrated to Conan 2 for better Clang 17 support and modern CMake integration
 - **WebSocket Library**: Boost.Beast with Asio (planned)
 - **JSON Parsing**: simdjson for hot path, RapidJSON for outbound messages
 - **NUMA Support**: libnuma for multi-socket server optimization
@@ -121,6 +123,13 @@ The system is architected as a single-process, multi-threaded application with s
 - **Platform**: Linux (utilizing epoll, huge pages, NUMA APIs)
 
 ## Critical Implementation Notes
+
+### libc++ Linking Considerations
+
+When linking against system libraries (e.g., OpenSSL, libcurl) that were built with libstdc++:
+- You may need to explicitly link `-lc++abi` to resolve ABI symbols
+- Consider static linking where possible to avoid runtime conflicts
+- Use `ldd` to verify all dependencies use consistent C++ runtime
 
 ### Memory Pool Usage Patterns
 
@@ -162,15 +171,67 @@ Must follow precise algorithm for differential feed reconstruction:
 
 ## Development Commands
 
-### Build System
-```bash
-# Setup build environment
-mkdir build && cd build
-conan install .. --build=missing
-cmake -DCMAKE_BUILD_TYPE=Release ..
+### Docker Development Environment
 
-# Build with optimizations
-make -j$(nproc)
+The project includes Docker support to provide a consistent Linux development environment, especially useful for macOS developers who need access to Linux-specific features like huge pages and NUMA APIs.
+
+**Key Benefits:**
+- **Linux-specific features on macOS**: Access to huge pages, NUMA APIs, and `libnuma-dev`
+- **Consistent build environment**: Ubuntu 22.04 base ensures identical toolchains across all developers
+- **Pre-configured dependencies**: Conan, CMake, and all required libraries pre-installed
+- **Performance tools**: `perf`, `valgrind`, `strace` included for profiling
+
+**Docker Workflow:**
+```bash
+# Build and start the development container
+docker compose up -d crypto-lob-dev
+
+# Enter the container for development
+docker exec -it crypto-lob-dev bash
+
+# Inside container: build with Linux optimizations
+cd /workspace
+conan install . --output-folder=build --build=missing \
+      -s compiler=clang -s compiler.version=17 \
+      -s compiler.libcxx=libc++ -s compiler.cppstd=20
+cd build
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake ..
+ninja -j$(nproc)  # Using Ninja for faster builds
+
+# Run tests inside container
+ctest -V
+
+# Run benchmarks with Linux performance features
+./crypto-lob-benchmarks
+```
+
+**Container Features:**
+- **Huge pages support**: `/dev/hugepages` mounted for 2MB page access
+- **Privileged mode**: Enables performance features and system tuning
+- **Remote debugging**: Port 2345 exposed for GDB remote debugging
+- **Build caching**: Anonymous volume preserves build artifacts between sessions
+- **Source mounting**: Local source code mounted at `/workspace` for live editing
+
+**Production-like testing:**
+```bash
+# Run production container (no dev tools)
+docker-compose up crypto-lob-prod
+```
+
+### Native Build System (Linux)
+```bash
+# Setup build environment (from project root)
+conan install . --output-folder=build --build=missing \
+      -s compiler=clang -s compiler.version=17 \
+      -s compiler.libcxx=libc++ -s compiler.cppstd=20
+
+cd build
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake ..
+
+# Build with optimizations (Ninja is faster than Make)
+ninja -j$(nproc)
 
 # Run tests
 ctest -V
@@ -198,6 +259,45 @@ ctest -V
 - Memory pool capacity: Size based on peak instrument count
 
 ## Architecture Decisions
+
+### Compiler Choice: Clang 17+
+
+**Why Clang for HFT Applications:**
+
+1. **Superior C++20 Support**
+   - Full support for `std::hardware_destructive_interference_size` (critical for cache-aware programming)
+   - Complete coroutines implementation for async I/O
+   - Better concepts support and error messages
+   - Earlier adoption of latest C++ features
+
+2. **Performance Advantages**
+   - **Aggressive inlining**: Better inter-procedural optimization for template-heavy code
+   - **Superior LTO**: Link-Time Optimization produces tighter, faster binaries
+   - **Vectorization**: Excellent auto-vectorization for SIMD operations
+   - **Branch prediction**: Better static branch prediction analysis
+
+3. **Development Experience**
+   - **Faster compilation**: 20-30% faster than GCC for template-heavy code
+   - **Better diagnostics**: Clear, actionable error messages for template metaprogramming
+   - **Superior sanitizers**: ThreadSanitizer and AddressSanitizer integration
+   - **Consistent behavior**: Less compiler-specific quirks than GCC
+
+4. **HFT-Specific Benefits**
+   - **Predictable codegen**: More consistent assembly output across optimization levels
+   - **Better profile-guided optimization**: Critical for hot path tuning
+   - **Strong static analysis**: Catches more potential race conditions at compile time
+   - **Excellent `__builtin` support**: For prefetching, branch hints, etc.
+
+**Compiler Configuration:**
+```bash
+# Required flags for optimal HFT performance
+-std=c++20              # Full C++20 features
+-stdlib=libc++          # Clang's optimized standard library
+-O3                     # Maximum optimization
+-march=native           # CPU-specific optimizations
+-flto=thin              # Fast link-time optimization
+-fno-exceptions         # Disable exceptions on hot paths (optional)
+```
 
 ### Lock-Free Design Philosophy
 - **Zero-malloc hot path**: All critical allocations use custom pools
@@ -262,6 +362,29 @@ ctest -V
 - [ ] End-to-end performance testing
 - [ ] Production monitoring and observability
 
+## Platform Requirements
+
+### Compiler and Environment
+- **Compiler**: Clang 17+ (required)
+- **Standard Library**: libc++ (Clang's optimized STL)
+- **C++ Standard**: C++20 (required)
+- **Platform**: Linux x86_64 only
+- **Features Required**:
+  - 128-bit integer support (`__int128`)
+  - Hardware interference size constants
+  - Huge page support (2MB/1GB)
+  - NUMA APIs (optional but recommended)
+
+### Build Environment
+- **Development**: Docker container with Ubuntu 22.04 + Clang 17
+- **Production**: Bare metal Linux with real-time kernel patches recommended
+- **Key Dependencies**:
+  - Conan 2.0+ package manager (migrated from 1.x for better C++20/Clang 17 support)
+  - Boost 1.82+ (with Asio/Beast)
+  - simdjson 3.9+
+  - TOML++ 3.4+
+  - libnuma (for NUMA-aware allocations)
+
 ## Memories
 
 - Use the system design plan from @Crypto Market Data Provider_.md as the primary reference point for implementation
@@ -269,3 +392,7 @@ ctest -V
 - The codebase is targeting Linux hosts only - no Windows or macOS compatibility needed
 - Focus on ultra-low latency and deterministic performance - every nanosecond matters
 - Memory pool implementation has been thoroughly reviewed and hardened against production edge cases
+- All code must be compiled with Clang 17+ for optimal HFT performance
+- You need to use new style docker command, such as "docker compose" instead of "docker-compose"
+- Always think hard. Before proposing code changes, think hard to make sure you don't break current code functionalities, such as API protocols, dev environment assumptions, features, etc. Think hard to not introducing new bugs when proposing a fix to the existing bugs. Always take a hard look of the larger window context of the code you are changing.
+- Remember all dev work need to be done in a linux devcontainer, not on this MacBook host

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "platform.hpp"  // Ensures __int128 support
+
 #include <cstdint>
 #include <string>
 #include <string_view>

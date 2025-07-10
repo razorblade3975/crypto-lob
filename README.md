@@ -31,6 +31,7 @@ A high-performance cryptocurrency market data provider system designed for ultra
 ## 🛠️ Technology Stack
 
 - **Language**: C++20 (coroutines, constexpr, concepts)
+- **Compiler**: Clang 17+ with libc++ (optimized for HFT workloads)
 - **Build System**: CMake with Conan package management
 - **JSON Parsing**: simdjson (hot path), RapidJSON (outbound)
 - **WebSockets**: Boost.Beast with Asio
@@ -41,9 +42,10 @@ A high-performance cryptocurrency market data provider system designed for ultra
 
 ### Prerequisites
 
-- GCC 10+ or Clang 12+ with C++20 support
+- **Compiler**: Clang 17+ (recommended) or GCC 13+ with full C++20 support
+  - Note: Clang is strongly preferred for HFT applications (see [CLAUDE.md](CLAUDE.md) for details)
 - CMake 3.20+
-- Conan 1.x package manager
+- Conan 2.0+ package manager
 - Linux with huge page support
 
 ### Build Instructions
@@ -53,13 +55,16 @@ A high-performance cryptocurrency market data provider system designed for ultra
 git clone https://github.com/razorblade3975/crypto-lob.git
 cd crypto-lob
 
-# Setup build environment
-mkdir build && cd build
-conan install .. --build=missing
+# Install dependencies with Conan 2
+conan install . --output-folder=build --build=missing \
+      -s compiler=clang -s compiler.version=17 \
+      -s compiler.libcxx=libc++ -s compiler.cppstd=20
 
 # Configure and build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(nproc)
+cd build
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake ..
+ninja -j$(nproc)  # Uses Ninja for faster builds
 
 # Run tests
 ctest -V

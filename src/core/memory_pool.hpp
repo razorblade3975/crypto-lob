@@ -1,5 +1,8 @@
 #pragma once
 
+#include "platform.hpp"  // Platform requirements and detection
+#include "cache.hpp"     // For CACHELINE_SIZE
+
 #include <cstddef>
 #include <memory>
 #include <new>
@@ -13,6 +16,8 @@
 #include <array>
 #include <thread>
 #include <chrono>
+
+// Linux-specific headers for huge pages
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -357,7 +362,7 @@ public:
     ThreadLocalCache& operator=(ThreadLocalCache&&) = delete;
     
     // Raw allocation (no construction) - returns uninitialized memory
-    [[gnu::always_inline]] [[nodiscard]] void* allocate_raw() {
+    [[clang::always_inline]] [[nodiscard]] void* allocate_raw() {
         allocation_count_++;
         
         // Hot path: Check local cache first - this is the common case
@@ -380,7 +385,7 @@ public:
     }
     
     // Raw deallocation (no destruction) - memory must be uninitialized
-    [[gnu::always_inline]] void deallocate_raw(void* ptr) {
+    [[clang::always_inline]] void deallocate_raw(void* ptr) {
         if (!ptr) [[unlikely]] return;
         
         deallocation_count_++;
@@ -411,7 +416,7 @@ public:
     }
     
     // High-level allocation with construction
-    [[gnu::always_inline]] [[nodiscard]] T* allocate() {
+    [[clang::always_inline]] [[nodiscard]] T* allocate() {
         void* raw_ptr = allocate_raw();
         if (raw_ptr) [[likely]] {
             return static_cast<T*>(raw_ptr);
@@ -421,7 +426,7 @@ public:
     
     // Fix #2: High-level deallocation with destruction
     // This is the ONLY function that calls destructors
-    [[gnu::always_inline]] void deallocate(T* ptr) {
+    [[clang::always_inline]] void deallocate(T* ptr) {
         if (!ptr) [[unlikely]] return;
         
         // Call destructor exactly once - here
@@ -568,7 +573,7 @@ private:
 protected:
     // Virtual function for NUMA override
     // Micro-performance: Inline virtual allocator hooks
-    [[gnu::always_inline]] virtual AllocationResult allocate_memory(size_t size, size_t alignment) {
+    [[clang::always_inline]] virtual AllocationResult allocate_memory(size_t size, size_t alignment) {
         return HugePageAllocator::allocate(size, alignment, cache_config_.use_huge_pages, 
                                          cache_config_.prefault_pages, cache_config_.max_prefault_mb);
     }
@@ -637,7 +642,7 @@ public:
     }
     
     // Allocate raw memory from global pool (used by thread-local caches)
-    [[gnu::always_inline]] [[nodiscard]] void* allocate_raw() {
+    [[clang::always_inline]] [[nodiscard]] void* allocate_raw() {
         if (is_shutting_down()) [[unlikely]] {
             handle_depletion();
         }
@@ -665,7 +670,7 @@ public:
     }
     
     // Deallocate raw memory to global pool (used by thread-local caches)
-    [[gnu::always_inline]] void deallocate_raw(void* ptr) noexcept {
+    [[clang::always_inline]] void deallocate_raw(void* ptr) noexcept {
         if (!ptr || !owns(ptr) || is_shutting_down()) [[unlikely]] {
             return;
         }
@@ -674,12 +679,12 @@ public:
         auto* node = new (ptr) FreeNode();
         
         auto current = free_head_.load();
+        using NodePtr = typename TaggedPointer128<FreeNode>::TaggedPtr;
         
+        NodePtr new_head;
         do {
             node->next.set(current.ptr, current.tag);
-            auto new_head = typename TaggedPointer128<FreeNode>::TaggedPtr{
-                node, current.tag + 1
-            };
+            new_head = NodePtr{node, current.tag + 1};
         } while (!free_head_.compare_exchange_weak(current, new_head));
         
         allocated_count_.fetch_sub(1, std::memory_order_relaxed);
@@ -692,13 +697,13 @@ public:
     }
     
     // High-level allocation interface (uses thread-local caching)
-    [[gnu::always_inline]] [[nodiscard]] T* allocate() {
+    [[clang::always_inline]] [[nodiscard]] T* allocate() {
         thread_local ThreadLocalCache<T> cache(this, cache_config_);
         return cache.allocate();
     }
     
     // High-level deallocation interface (uses thread-local caching)
-    [[gnu::always_inline]] void deallocate(T* ptr) {
+    [[clang::always_inline]] void deallocate(T* ptr) {
         thread_local ThreadLocalCache<T> cache(this, cache_config_);
         cache.deallocate(ptr);
     }

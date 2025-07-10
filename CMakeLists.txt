@@ -5,14 +5,38 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Find Conan-generated package config files
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_BINARY_DIR})
+list(APPEND CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})
+
 # Build options
 option(BUILD_TESTS "Build tests" ON)
-option(BUILD_BENCHMARKS "Build benchmarks" ON)
+option(BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(ENABLE_SANITIZERS "Enable sanitizers" OFF)
 
 # Compiler-specific flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -O3 -march=native)
+    
+    # Clang-specific optimizations for HFT
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(
+            -flto=thin                    # Fast link-time optimization
+            -fstrict-aliasing            # Enable strict aliasing optimizations
+            -ffast-math                  # Allow aggressive FP optimizations
+            -fno-rtti                    # Disable RTTI (not needed for HFT)
+            -fomit-frame-pointer         # Free up register
+            -momit-leaf-frame-pointer    # Optimize leaf functions
+        )
+        
+        # Use libc++ with Clang
+        add_compile_options(-stdlib=libc++)
+        add_link_options(-stdlib=libc++)
+        
+        # Enable thin LTO for linking
+        add_link_options(-flto=thin)
+    endif()
+    
     if(ENABLE_SANITIZERS)
         add_compile_options(-fsanitize=address -fsanitize=undefined)
         add_link_options(-fsanitize=address -fsanitize=undefined)
@@ -20,40 +44,51 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # Find required packages
-find_package(Boost 1.82.0 REQUIRED COMPONENTS system)
+find_package(Boost REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
+find_package(simdjson REQUIRED)
+find_package(tomlplusplus REQUIRED)
 
 # Include directories
 include_directories(src)
 
-# Core library
-file(GLOB_RECURSE CORE_SOURCES 
-    "src/core/*.cpp"
-    "src/networking/*.cpp"
-    "src/exchanges/*.cpp"
-    "src/parsing/*.cpp"
-    "src/orderbook/*.cpp"
-    "src/ipc/*.cpp"
-    "src/threading/*.cpp"
-)
+# Core library - commented out until source files exist
+# file(GLOB_RECURSE CORE_SOURCES 
+#     "src/core/*.cpp"
+#     "src/networking/*.cpp"
+#     "src/exchanges/*.cpp"
+#     "src/parsing/*.cpp"
+#     "src/orderbook/*.cpp"
+#     "src/ipc/*.cpp"
+#     "src/threading/*.cpp"
+# )
 
-add_library(crypto-lob-core STATIC ${CORE_SOURCES})
+# add_library(crypto-lob-core STATIC ${CORE_SOURCES})
 
-target_link_libraries(crypto-lob-core 
-    PUBLIC
-        Boost::system
-        Threads::Threads
-)
+# target_link_libraries(crypto-lob-core 
+#     PUBLIC
+#         Boost::boost
+#         Boost::system
+#         Threads::Threads
+#         simdjson::simdjson
+#         tomlplusplus::tomlplusplus
+# )
 
-target_include_directories(crypto-lob-core
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-        $<INSTALL_INTERFACE:include>
-)
+# target_include_directories(crypto-lob-core
+#     PUBLIC
+#         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+#         $<INSTALL_INTERFACE:include>
+# )
 
 # Main executable
 add_executable(crypto-lob src/main.cpp)
-target_link_libraries(crypto-lob crypto-lob-core)
+target_link_libraries(crypto-lob 
+    Boost::boost
+    Boost::system
+    Threads::Threads
+    simdjson::simdjson
+    tomlplusplus::tomlplusplus
+)
 
 # Tests
 if(BUILD_TESTS)
@@ -63,28 +98,38 @@ if(BUILD_TESTS)
     file(GLOB_RECURSE TEST_SOURCES "tests/unit/*.cpp")
     add_executable(crypto-lob-tests ${TEST_SOURCES})
     target_link_libraries(crypto-lob-tests 
-        crypto-lob-core
-        GTest::GTest
-        GTest::Main
+        Boost::boost
+        Boost::system
+        Threads::Threads
+        simdjson::simdjson
+        tomlplusplus::tomlplusplus
+        GTest::gtest
+        GTest::gtest_main
+    )
+    
+    # Include directories for tests
+    target_include_directories(crypto-lob-tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     
     add_test(NAME crypto-lob-tests COMMAND crypto-lob-tests)
 endif()
 
-# Benchmarks
-if(BUILD_BENCHMARKS)
-    find_package(benchmark REQUIRED)
+# Benchmarks - TODO
+# if(BUILD_BENCHMARKS)
+#     find_package(benchmark REQUIRED)
     
-    file(GLOB_RECURSE BENCH_SOURCES "tests/benchmarks/*.cpp")
-    add_executable(crypto-lob-benchmarks ${BENCH_SOURCES})
-    target_link_libraries(crypto-lob-benchmarks 
-        crypto-lob-core
-        benchmark::benchmark
-    )
-endif()
+#     file(GLOB_RECURSE BENCH_SOURCES "tests/benchmarks/*.cpp")
+#     add_executable(crypto-lob-benchmarks ${BENCH_SOURCES})
+#     target_link_libraries(crypto-lob-benchmarks 
+#         crypto-lob-core
+#         benchmark::benchmark
+#     )
+# endif()
 
 # Install targets
-install(TARGETS crypto-lob crypto-lob-core
+install(TARGETS crypto-lob
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib

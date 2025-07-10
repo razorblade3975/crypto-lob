@@ -1,0 +1,44 @@
+
+services:
+  crypto-lob-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: crypto-lob-dev
+    volumes:
+      - .:/workspace
+      - /workspace/build  # Anonymous volume - isolates from host build
+      - /workspace/.conan  # Anonymous volume - isolates from host conan cache
+      - /dev/hugepages:/dev/hugepages # Mount huge pages if available
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    # Enable huge pages and performance features
+    privileged: true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      
+    environment:
+      - CMAKE_BUILD_TYPE=Release
+    # Expose debugging ports
+    ports:
+      - "8080:8080"
+      - "2345:2345"  # For remote debugging
+    command: /bin/bash
+
+  # Production-like container for testing
+  crypto-lob-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: build-env
+    container_name: crypto-lob-prod
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - CMAKE_BUILD_TYPE=Release
+    command: ./build/crypto-lob

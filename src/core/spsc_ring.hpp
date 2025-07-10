@@ -11,8 +11,8 @@
 
 namespace crypto_lob::core {
 
-// Always inline macro for hot path functions
-#define ALWAYS_INLINE [[gnu::always_inline]] inline
+// Always inline macro for hot path functions - using Clang-specific attribute
+#define ALWAYS_INLINE [[clang::always_inline]] inline
 
 // Aligned memory deleter for use with unique_ptr
 struct AlignedDeleter {
