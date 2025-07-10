@@ -6,10 +6,11 @@ A high-performance cryptocurrency market data provider system designed for ultra
 
 - **Ultra-Low Latency**: Optimized for sub-microsecond processing times
 - **Lock-Free Architecture**: Thread-local memory pools with ABA-protected operations
-- **Multi-Exchange Support**: Binance, OKX, KuCoin WebSocket feeds
-- **Financial Precision**: Fixed-point arithmetic for accurate price calculations
+- **Multi-Exchange Support**: Binance, OKX, KuCoin WebSocket feeds (planned)
+- **Financial Precision**: 128-bit fixed-point arithmetic for accurate price calculations
 - **NUMA-Aware**: Optimized for multi-socket server architectures
 - **Zero-Copy Design**: Minimal memory allocations on hot paths
+- **High-Performance Order Book**: Lock-free book sides with intrusive RB-tree and O(1) lookups
 
 ## 🏗️ Architecture
 
@@ -27,6 +28,8 @@ A high-performance cryptocurrency market data provider system designed for ultra
 - **Huge Page Support**: 2MB/1GB pages for reduced TLB misses
 - **Software Prefetching**: Optimized memory access patterns
 - **Branch Prediction Hints**: CPU pipeline optimization
+- **Dual-Index Order Book**: Intrusive RB-tree for ordering + hash map for O(1) lookups
+- **Cache-Aligned Data Structures**: 128-byte nodes with hot data in first cache line
 
 ## 🛠️ Technology Stack
 
@@ -186,17 +189,21 @@ perf report
   - Fixed critical thread-local cache design flaw (July 2025)
   - Implemented intrusive linked list for proper cache management
   - One cache per thread per pool with automatic cleanup
-- [x] Fixed-point price arithmetic with adaptive precision
+- [x] Fixed-point price arithmetic with adaptive precision (128-bit)
 - [x] Cache alignment infrastructure with centralized constants
 - [x] Wait-free SPSC ring buffer using Disruptor pattern
+- [x] Lock-free order book side implementation
+  - Intrusive RB-tree for ordered traversal
+  - Boost unordered_flat_map for O(1) price lookups
+  - Top-N tracking for market data feeds
+  - Comprehensive test suite with fuzz testing
 - [x] Build system and project structure
+- [x] Docker development environment
 - [x] Comprehensive documentation
 
 ### 🚧 In Progress
-- [ ] Flat hash map for O(1) order ID lookups
-- [ ] Dense adaptive arrays with tick bucketing
-- [ ] Intrusive FIFO order lists for cache efficiency
-- [ ] Complete order book assembly
+- [ ] Complete order book assembly (bid/ask integration)
+- [ ] Dense adaptive arrays with tick bucketing (future optimization)
 
 ### 📋 Planned
 - [ ] Exchange-specific connectors

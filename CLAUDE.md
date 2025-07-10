@@ -122,6 +122,24 @@ The system is architected as a single-process, multi-threaded application with s
 - **64-bit counter safety**: Supports ~5×10^19 operations before wraparound
 - **Ultra-low latency**: Optimized for sub-microsecond operation times
 
+### Lock-Free Order Book Side (src/core/book_side.hpp, src/core/price_level.hpp)
+
+**High-Performance Order Book Side Implementation** with dual data structures:
+
+- **Intrusive RB-Tree**: Boost.Intrusive set for ordered price traversal
+- **Hash Map Index**: Boost unordered_flat_map for O(1) price lookups
+- **Memory Pool Integration**: All price level nodes allocated from thread-local pools
+- **Top-N Tracking**: Efficient tracking of top price levels for market data feeds
+- **Cache-Aligned Nodes**: 128-byte PriceLevelNode with hot data in first 32 bytes
+- **Subtree Size Tracking**: Prepared for O(log n) rank queries (future feature)
+
+**Design Highlights:**
+- **Dual indexing**: Tree for ordering, hash for fast lookup
+- **Zero allocation on updates**: Only allocate for new price levels
+- **Atomic-free operations**: No atomics needed for single-threaded book side
+- **Iterator stability**: Pointers remain valid across non-destructive updates
+- **Comprehensive testing**: Includes fuzz testing with millions of operations
+
 ### Technology Stack
 
 - **Language**: C++20 (leveraging coroutines, constexpr, templates, concepts)
@@ -332,7 +350,10 @@ ctest -V
 ### Unit Tests (tests/unit/)
 - Memory pool correctness under concurrent access
 - Price arithmetic edge cases and precision validation
-- Configuration parsing and validation
+- Book side operations: insertion, updates, deletions
+- Tree/hash coherence validation with fuzz testing
+- Top-N tracking and kth-level queries
+- Iterator stability across modifications
 
 ### Integration Tests (tests/integration/)
 - Full pipeline simulation with mock exchange data
@@ -355,10 +376,11 @@ ctest -V
 - [x] Cache alignment infrastructure with centralized constants
 - [x] Wait-free SPSC ring buffer using Disruptor pattern
 - [x] Thread-safe memory pool with proper thread-local cache management
-- [ ] Flat hash map for O(1) order ID lookups
-- [ ] Dense adaptive arrays with tick bucketing for price levels
-- [ ] Intrusive FIFO order lists with cache-line optimization
-- [ ] Complete order book assembly
+- [x] Lock-free order book side implementation with intrusive RB-tree
+- [x] Boost unordered_flat_map for O(1) price lookups
+- [x] Price level nodes with cache-aligned layout
+- [ ] Complete order book assembly (bid/ask sides integration)
+- [ ] Dense adaptive arrays with tick bucketing (future optimization)
 
 ### Phase 3: Networking Layer
 - [ ] WebSocket client with Boost.Beast
@@ -409,3 +431,4 @@ ctest -V
 - You need to use new style docker command, such as "docker compose" instead of "docker-compose"
 - Always think hard. Before proposing code changes, think hard to make sure you don't break current code functionalities, such as API protocols, dev environment assumptions, features, etc. Think hard to not introducing new bugs when proposing a fix to the existing bugs. Always take a hard look of the larger window context of the code you are changing.
 - Remember all dev work need to be done in a linux devcontainer, not on this MacBook host
+- Run any code in devcontainer.
