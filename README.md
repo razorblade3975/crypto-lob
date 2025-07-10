@@ -110,28 +110,34 @@ websocket_url = "wss://ws.okx.com:8443"
 
 int main() {
     // Initialize memory pool for orders
-    MemoryPool<Order> pool(1024);
+    MemoryPool<Order> pool(10000);
     
-    // Create order with fixed-point price
-    auto price = Price::from_string("50000.25");
-    auto order = pool.construct(order_id, price, quantity);
+    // Create worker threads
+    std::vector<std::thread> workers;
+    std::atomic<bool> stop_flag{false};
     
-    // Setup inter-thread communication
-    SPSCRing<MarketEvent> ring(1024);
-    MarketEvent event{price, quantity, timestamp};
+    // Worker thread function
+    auto worker = [&pool, &stop_flag]() {
+        while (!stop_flag.load()) {
+            // Allocate orders from thread-local cache
+            auto order = pool.construct(order_id, price, quantity);
+            // Process order...
+            pool.destroy(order);
+        }
+    };
     
-    // Producer thread
-    if (ring.try_push(std::move(event))) {
-        // Event published successfully
+    // Start workers
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back(worker);
     }
     
-    // Consumer thread
-    MarketEvent received_event;
-    if (ring.try_pop(received_event)) {
-        // Process received event...
-    }
+    // ... run application ...
     
-    pool.destroy(order);
+    // Shutdown sequence (CRITICAL ORDER!)
+    stop_flag.store(true);              // 1. Signal workers to stop
+    for (auto& t : workers) t.join();   // 2. Wait for all threads
+    // 3. Pool destructor can now safely run
+    
     return 0;
 }
 ```
@@ -177,6 +183,9 @@ perf report
 
 ### ✅ Completed
 - [x] Lock-free memory pool allocator with thread-local caching
+  - Fixed critical thread-local cache design flaw (July 2025)
+  - Implemented intrusive linked list for proper cache management
+  - One cache per thread per pool with automatic cleanup
 - [x] Fixed-point price arithmetic with adaptive precision
 - [x] Cache alignment infrastructure with centralized constants
 - [x] Wait-free SPSC ring buffer using Disruptor pattern

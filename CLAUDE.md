@@ -67,6 +67,18 @@ The system is architected as a single-process, multi-threaded application with s
 - **Comprehensive statistics** for monitoring and tuning
 - **Configurable depletion policies** (throw/terminate/resize)
 
+**Critical Design Fix (July 2025):**
+- Fixed fundamental thread-local cache bug where each method created independent caches
+- Implemented intrusive linked list for proper cache management
+- Exactly one cache per thread per pool instance with automatic cleanup
+- Thread-local vector ensures proper destructor calls at thread exit
+- Added `flush_thread_cache()` for testing and graceful shutdown
+
+**Shutdown Requirements:**
+- Pool MUST outlive all threads that use it
+- Join all worker threads before destroying the pool
+- Failing to follow this order causes use-after-free errors
+
 ### Fixed-Point Price System (src/core/price.hpp)
 
 **Adaptive Precision Price Representation** for cryptocurrency price ranges:
@@ -339,9 +351,10 @@ ctest -V
 - [x] Fixed-point price representation
 - [x] Basic build system and project structure
 
-### Phase 2: Data Structures (In Progress)
+### Phase 2: Data Structures ✅
 - [x] Cache alignment infrastructure with centralized constants
 - [x] Wait-free SPSC ring buffer using Disruptor pattern
+- [x] Thread-safe memory pool with proper thread-local cache management
 - [ ] Flat hash map for O(1) order ID lookups
 - [ ] Dense adaptive arrays with tick bucketing for price levels
 - [ ] Intrusive FIFO order lists with cache-line optimization
