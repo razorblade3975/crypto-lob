@@ -123,7 +123,7 @@ The system is architected as a single-process, multi-threaded application with s
 - **64-bit counter safety**: Supports ~5×10^19 operations before wraparound
 - **Ultra-low latency**: Optimized for sub-microsecond operation times
 
-### Lock-Free Order Book Side (src/core/book_side.hpp, src/core/price_level.hpp)
+### Lock-Free Order Book Side (src/orderbook/book_side.hpp, src/orderbook/price_level.hpp)
 
 **High-Performance Order Book Side Implementation** with dual data structures:
 

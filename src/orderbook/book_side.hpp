@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "core/memory_pool.hpp"
-#include "core/price_level.hpp"
+#include "orderbook/price_level.hpp"
 
 namespace crypto_lob::core {
 

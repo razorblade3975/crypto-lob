@@ -20,7 +20,7 @@ namespace crypto_lob::core {
     }
 }
 
-#include "core/book_side.hpp"
+#include "orderbook/book_side.hpp"
 #include "core/memory_pool.hpp"
 
 using namespace crypto_lob::core;
