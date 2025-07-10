@@ -22,8 +22,9 @@ The system is architected as a single-process, multi-threaded application with s
    - Critical latency bottleneck requiring SIMD optimization
    - Parser object reuse pattern essential for performance
 
-3. **Order Book Engine** - Core processing unit maintaining full-depth limit order books
-   - Reconstructs and maintains in-memory LOB for each instrument
+3. **Order Book Engine** - Core processing unit maintaining price-level order books (L2 data)
+   - Processes aggregated price levels from exchange feeds (no individual order tracking)
+   - Maintains in-memory LOB with price → aggregate quantity mapping
    - Generates business events (top-of-book changes, trades)
    - Complex state machine for book synchronization (UNINITIALIZED → SYNCING_SNAPSHOT → SYNCING_BUFFER → LIVE)
 

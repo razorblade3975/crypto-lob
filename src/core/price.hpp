@@ -279,11 +279,8 @@ public:
     }
 };
 
-// Quantity type for order quantities (same precision requirements as Price)
+// Quantity type for price level quantities (same precision requirements as Price)
 using Quantity = Price;
-
-// Order ID type
-using OrderId = uint64_t;
 
 // Concepts for type safety
 template<typename T>
@@ -291,9 +288,6 @@ concept PriceType = std::same_as<T, Price>;
 
 template<typename T>
 concept QuantityType = std::same_as<T, Quantity>;
-
-template<typename T>
-concept OrderIdType = std::same_as<T, OrderId>;
 
 }  // namespace crypto_lob::core
 

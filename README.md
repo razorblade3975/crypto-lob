@@ -18,7 +18,7 @@ A high-performance cryptocurrency market data provider system designed for ultra
 
 - **Exchange Connectors**: Direct WebSocket interfaces with exchange-specific protocols
 - **Data Normalization**: High-speed JSON parsing using simdjson
-- **Order Book Engine**: Full-depth limit order book reconstruction and maintenance
+- **Order Book Engine**: Price-level order book reconstruction and maintenance (L2 data)
 - **IPC Publisher**: Lock-free shared memory communication for downstream consumers
 
 ### Performance Features
