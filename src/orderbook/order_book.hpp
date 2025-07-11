@@ -87,9 +87,12 @@ class alignas(CACHELINE_SIZE) OrderBook {
     /// @return true if top of book changed, false otherwise
     /// Caller can use this return value to track BBO changes without storing state
     [[nodiscard]] bool update(Side side, Price price, std::uint64_t quantity) {
-        // Cache old top for comparison
+        // Cache old top and quantities for comparison
+        // Note: we must cache quantities before apply_update modifies them in-place
         auto old_bid_top = bids_.best();
         auto old_ask_top = asks_.best();
+        uint64_t old_bid_qty = old_bid_top ? old_bid_top->quantity : 0;
+        uint64_t old_ask_qty = old_ask_top ? old_ask_top->quantity : 0;
 
         // Apply update to appropriate side
         if (side == Side::BUY) {
@@ -98,15 +101,13 @@ class alignas(CACHELINE_SIZE) OrderBook {
             asks_.apply_update(price, quantity, 0);
         }
 
-        // Check if top changed
+        // Check if top changed (price or quantity)
         auto new_bid_top = bids_.best();
         auto new_ask_top = asks_.best();
 
-        bool bid_changed = (old_bid_top != new_bid_top) ||
-                           (old_bid_top && new_bid_top && old_bid_top->quantity != new_bid_top->quantity);
+        bool bid_changed = (old_bid_top != new_bid_top) || (new_bid_top && old_bid_qty != new_bid_top->quantity);
 
-        bool ask_changed = (old_ask_top != new_ask_top) ||
-                           (old_ask_top && new_ask_top && old_ask_top->quantity != new_ask_top->quantity);
+        bool ask_changed = (old_ask_top != new_ask_top) || (new_ask_top && old_ask_qty != new_ask_top->quantity);
 
         // Update cached TOB if needed
         if (bid_changed || ask_changed) {
