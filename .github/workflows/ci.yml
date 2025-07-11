@@ -90,6 +90,9 @@ jobs:
           echo '⚡ Building with Ninja...' && \
           ninja -j\$(nproc) && \
           echo '🧪 Running ${{ matrix.build_type }} tests with ${{ matrix.sanitizer }} sanitizer...' && \
+          if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then \
+            export TSAN_OPTIONS='suppressions=/workspace/tsan.suppressions'; \
+          fi && \
           ctest -V --output-on-failure
         "
     

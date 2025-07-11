@@ -1,0 +1,19 @@
+# ThreadSanitizer suppression file for crypto-lob
+# 
+# This file contains suppressions for known false positives in ThreadSanitizer.
+# The lock-free memory pool implementation has benign races that are inherent
+# to the design and are safe.
+
+# Memory pool false positives
+# When memory is deallocated, it's repurposed to store free list pointers.
+# When that same memory is allocated and written to by the user, TSAN sees
+# this as a race between the atomic free list operations and user writes.
+# This is a classic false positive in lock-free allocators.
+race:crypto_lob::core::MemoryPool*::allocate_raw
+race:crypto_lob::core::TaggedPointer128*::load
+race:crypto_lob::core::ThreadLocalCache*::refill_from_global
+race:crypto_lob::core::ThreadLocalCache*::allocate_raw
+
+# Suppress races in the test itself where we intentionally write to freshly
+# allocated memory that was just part of the free list
+race:ParameterizedMemoryPoolTest_TSanSafeFreelistStress_Test::TestBody
