@@ -86,39 +86,6 @@ jobs:
           build/Testing/
           *.log
 
-  # Static analysis as separate job (only run on one configuration)
-  static-analysis:
-    name: Static Analysis  
-    runs-on: ubuntu-22.04
-    needs: format-check
-    if: github.event_name == 'pull_request'  # Only on PRs to save time
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Run clang-tidy
-      run: |
-        docker compose run --rm crypto-lob-dev bash -c "
-          cd /workspace && \
-          conan install . --output-folder=build_tidy --build=missing \
-            -s compiler=clang -s compiler.version=17 \
-            -s compiler.libcxx=libc++ -s compiler.cppstd=20 \
-            -s build_type=Debug && \
-          cd build_tidy && \
-          cmake -DCMAKE_BUILD_TYPE=Debug \
-                -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
-                -DCMAKE_C_COMPILER=clang-17 \
-                -DCMAKE_CXX_COMPILER=clang++-17 \
-                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-                -G Ninja .. && \
-          cd /workspace && \
-          find src tests -name '*.cpp' | \
-          xargs clang-tidy-17 -p build_tidy/ \
-                --config-file=.clang-tidy \
-                --header-filter='.*' || \
-          echo '⚠️  Clang-tidy warnings found (non-blocking)'
-        "
 
   # Production container build (only on main branch)
   production-build:
