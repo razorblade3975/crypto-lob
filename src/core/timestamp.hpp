@@ -15,7 +15,9 @@ concept TimestampType = std::same_as<T, Timestamp>;
 
 // Utility function to get current timestamp
 inline Timestamp current_timestamp() noexcept {
-    auto now = std::chrono::high_resolution_clock::now();
+    // Use system_clock for wall-clock time (not high_resolution_clock which may be monotonic)
+    // This is critical for HFT systems that need real timestamps for market data
+    auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     return std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
 }
