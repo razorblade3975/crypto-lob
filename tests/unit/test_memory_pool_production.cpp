@@ -12,23 +12,10 @@
 #include "core/memory_pool.hpp"
 
 // TSAN interface includes and macros
-#ifdef __has_feature
-#if __has_feature(thread_sanitizer)
-#include <sanitizer/tsan_interface.h>
-#define TSAN_IGNORE_WRITES_BEGIN() AnnotateIgnoreWritesBegin(__FILE__, __LINE__)
-#define TSAN_IGNORE_WRITES_END() AnnotateIgnoreWritesEnd(__FILE__, __LINE__)
-#define TSAN_ANNOTATE_BENIGN_RACE_SIZED(ptr, size, description) \
-    AnnotateBenignRaceSized(__FILE__, __LINE__, ptr, size, description)
-#else
+// For now, disable TSAN annotations as they're not available in this environment
 #define TSAN_IGNORE_WRITES_BEGIN() ((void)0)
 #define TSAN_IGNORE_WRITES_END() ((void)0)
 #define TSAN_ANNOTATE_BENIGN_RACE_SIZED(ptr, size, description) ((void)0)
-#endif
-#else
-#define TSAN_IGNORE_WRITES_BEGIN() ((void)0)
-#define TSAN_IGNORE_WRITES_END() ((void)0)
-#define TSAN_ANNOTATE_BENIGN_RACE_SIZED(ptr, size, description) ((void)0)
-#endif
 
 using namespace crypto_lob::core;
 
