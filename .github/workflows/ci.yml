@@ -48,16 +48,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Cache Docker layers
-      uses: actions/cache@v4
-      with:
-        path: /tmp/.buildx-cache
-        key: ${{ runner.os }}-buildx-${{ hashFiles('Dockerfile', 'docker-compose.yml') }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-
     
     - name: Cache Conan packages
       uses: actions/cache@v4
@@ -70,12 +60,7 @@ jobs:
     
     - name: Build development container
       run: |
-        docker compose build --cache-from type=local,src=/tmp/.buildx-cache \
-                             --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
-                             crypto-lob-dev
-        # Move cache to avoid growing cache
-        rm -rf /tmp/.buildx-cache
-        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+        docker compose build crypto-lob-dev
     
     - name: Mount Conan cache and build
       run: |
