@@ -56,7 +56,13 @@ class alignas(CACHELINE_SIZE) OrderBook {
         std::size_t top_n_depth = 20;
     };
 
-    explicit OrderBook(const InstrumentId& instrument, PoolType& pool, const Config& config = {})
+    explicit OrderBook(const InstrumentId& instrument, PoolType& pool)
+        : instrument_(instrument), bids_(pool, 4096), asks_(pool, 4096) {
+        bids_.set_top_n_depth(20);
+        asks_.set_top_n_depth(20);
+    }
+    
+    explicit OrderBook(const InstrumentId& instrument, PoolType& pool, const Config& config)
         : instrument_(instrument), bids_(pool, config.initial_capacity), asks_(pool, config.initial_capacity) {
         bids_.set_top_n_depth(config.top_n_depth);
         asks_.set_top_n_depth(config.top_n_depth);
@@ -64,11 +70,11 @@ class alignas(CACHELINE_SIZE) OrderBook {
 
     ~OrderBook() = default;
 
-    // Delete copy, allow move
+    // Delete copy and move operations due to BidSide/AskSide constraints
     OrderBook(const OrderBook&) = delete;
     OrderBook& operator=(const OrderBook&) = delete;
-    OrderBook(OrderBook&&) = default;
-    OrderBook& operator=(OrderBook&&) = default;
+    OrderBook(OrderBook&&) = delete;
+    OrderBook& operator=(OrderBook&&) = delete;
 
     /// Clear all levels from both sides
     void clear() noexcept {
@@ -86,8 +92,11 @@ class alignas(CACHELINE_SIZE) OrderBook {
         auto old_ask_top = asks_.best();
 
         // Apply update to appropriate side
-        auto result =
-            (side == Side::BUY) ? bids_.apply_update(price, quantity, 0) : asks_.apply_update(price, quantity, 0);
+        if (side == Side::BUY) {
+            bids_.apply_update(price, quantity, 0);
+        } else {
+            asks_.apply_update(price, quantity, 0);
+        }
 
         // Check if top changed
         auto new_bid_top = bids_.best();

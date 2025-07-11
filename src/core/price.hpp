@@ -294,6 +294,18 @@ concept PriceType = std::same_as<T, Price>;
 template <typename T>
 concept QuantityType = std::same_as<T, Quantity>;
 
+// Hash function for Price type to support Boost containers
+inline std::size_t hash_value(const Price& p) {
+    // Hash based on raw value and scale
+    auto raw = p.raw_value();
+    auto scale = p.scale();
+    // Mix the high and low parts of the 128-bit value with scale
+    std::size_t h1 = std::hash<uint64_t>{}(static_cast<uint64_t>(raw));
+    std::size_t h2 = std::hash<uint64_t>{}(static_cast<uint64_t>(raw >> 64));
+    std::size_t h3 = std::hash<int64_t>{}(scale);
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+}
+
 }  // namespace crypto_lob::core
 
 // Formatter for Price type
