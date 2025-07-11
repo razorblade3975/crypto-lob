@@ -227,7 +227,7 @@ conan install . --output-folder=build --build=missing \
 cd build
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake ..
-t  # Using Ninja for faster builds
+ninja -j$(nproc)  # Using Ninja for faster builds
 
 # Run tests inside container
 ctest -V
