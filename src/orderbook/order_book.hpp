@@ -61,7 +61,7 @@ class alignas(CACHELINE_SIZE) OrderBook {
         bids_.set_top_n_depth(20);
         asks_.set_top_n_depth(20);
     }
-    
+
     explicit OrderBook(const InstrumentId& instrument, PoolType& pool, const Config& config)
         : instrument_(instrument), bids_(pool, config.initial_capacity), asks_(pool, config.initial_capacity) {
         bids_.set_top_n_depth(config.top_n_depth);

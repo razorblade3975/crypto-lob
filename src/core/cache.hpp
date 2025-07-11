@@ -80,7 +80,6 @@ inline void prefetch(const void* addr, PrefetchHint hint = PrefetchHint::READ_TE
     }
 }
 
-
 // Utility to calculate optimal padding between two members
 template <typename T1, typename T2>
 [[nodiscard]] constexpr std::size_t padding_between() noexcept {

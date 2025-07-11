@@ -7,8 +7,8 @@
 namespace crypto_lob::core {
 
 // Exchange identifier
-enum class ExchangeId : uint8_t { 
-    BINANCE_SPOT = 0, 
+enum class ExchangeId : uint8_t {
+    BINANCE_SPOT = 0,
     BINANCE_FUT = 1,
     BYBIT_SPOT = 2,
     BYBIT_FUT = 3,

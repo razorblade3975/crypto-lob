@@ -5,8 +5,8 @@
 
 #include <gtest/gtest.h>
 
-#include "core/price.hpp"
 #include "core/memory_pool.hpp"
+#include "core/price.hpp"
 #include "orderbook/book_side.hpp"
 
 using namespace crypto_lob::core;
@@ -190,7 +190,8 @@ TEST_F(BookSideTest, FuzzTest) {
             for (const auto& [px, qty] : expected_book) {
                 auto* node = ask_side_->find(px);
                 ASSERT_NE(node, nullptr) << "Price " << px.to_string() << " not found at operation " << i;
-                ASSERT_EQ(node->quantity, qty) << "Quantity mismatch for price " << px.to_string() << " at operation " << i;
+                ASSERT_EQ(node->quantity, qty)
+                    << "Quantity mismatch for price " << px.to_string() << " at operation " << i;
             }
         }
 #endif
