@@ -22,7 +22,7 @@
 using namespace crypto_lob::core;
 
 // Order structure typical in HFT
-struct Order {
+struct alignas(64) Order {
     uint64_t order_id;
     uint64_t instrument_id;
     double price;
@@ -176,7 +176,9 @@ void benchmark_allocator_latency(const std::string& name, Allocator& alloc, size
             new (ptr) Order{};
             warmup_ptrs.push_back(ptr);
         } else if constexpr (std::is_same_v<Allocator, MemoryPool<Order>>) {
-            warmup_ptrs.push_back(alloc.construct());
+            auto* ptr = alloc.allocate();
+            new (ptr) Order{};
+            warmup_ptrs.push_back(ptr);
         }
     }
 
@@ -186,7 +188,8 @@ void benchmark_allocator_latency(const std::string& name, Allocator& alloc, size
             ptr->~Order();
             alloc.deallocate(ptr, 1);
         } else if constexpr (std::is_same_v<Allocator, MemoryPool<Order>>) {
-            alloc.destroy(ptr);
+            ptr->~Order();
+            alloc.deallocate(ptr);
         }
     }
 
@@ -199,7 +202,8 @@ void benchmark_allocator_latency(const std::string& name, Allocator& alloc, size
                 ptr = alloc.allocate(1);
                 new (ptr) Order{};
             } else if constexpr (std::is_same_v<Allocator, MemoryPool<Order>>) {
-                ptr = alloc.construct();
+                ptr = alloc.allocate();
+                new (ptr) Order{};
             }
         });
 
@@ -217,7 +221,8 @@ void benchmark_allocator_latency(const std::string& name, Allocator& alloc, size
                 ptr->~Order();
                 alloc.deallocate(ptr, 1);
             } else if constexpr (std::is_same_v<Allocator, MemoryPool<Order>>) {
-                alloc.destroy(ptr);
+                ptr->~Order();
+                alloc.deallocate(ptr);
             }
         });
 
@@ -316,7 +321,9 @@ void benchmark_cache_behavior() {
         ptrs.reserve(num_objects);
 
         for (size_t i = 0; i < num_objects; ++i) {
-            ptrs.push_back(pool.construct());
+            auto* ptr = pool.allocate();
+            new (ptr) Order{};
+            ptrs.push_back(ptr);
         }
 
         auto start = std::chrono::high_resolution_clock::now();
@@ -336,7 +343,8 @@ void benchmark_cache_behavior() {
         std::cout << "MemoryPool cache traverse: " << duration.count() / access_iterations << " ns/iteration\n";
 
         for (auto* ptr : ptrs) {
-            pool.destroy(ptr);
+            ptr->~Order();
+            pool.deallocate(ptr);
         }
     }
 }
@@ -366,9 +374,11 @@ void benchmark_thread_local_cache() {
         auto start = std::chrono::high_resolution_clock::now();
 
         for (size_t i = 0; i < iterations; ++i) {
-            auto* order = pool.construct();
+            auto* order = pool.allocate();
+            new (order) Order{};
             benchmark::DoNotOptimize(order);
-            pool.destroy(order);
+            order->~Order();
+            pool.deallocate(order);
         }
 
         auto end = std::chrono::high_resolution_clock::now();
@@ -395,7 +405,7 @@ int main(int argc, char** argv) {
     std::allocator<Order> std_alloc;
     benchmark_allocator_latency("std::allocator", std_alloc, iterations);
 
-    MemoryPool<Order> mem_pool(iterations * 2);
+    MemoryPool<Order> mem_pool(iterations * 2, PoolDepletionPolicy::TERMINATE_PROCESS);
     benchmark_allocator_latency("MemoryPool", mem_pool, iterations);
 
 #ifdef HAS_JEMALLOC
