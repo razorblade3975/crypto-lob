@@ -39,6 +39,23 @@ target_compile_options(memory_pool_comparison_benchmark PRIVATE
     -fno-omit-frame-pointer  # For profiling
 )
 
+# Batch allocation benchmark
+add_executable(batch_allocation_benchmark
+    batch_allocation_benchmark.cpp
+)
+
+target_link_libraries(batch_allocation_benchmark
+    ${BENCHMARK_COMMON_LIBS}
+    crypto_lob_core
+)
+
+target_compile_options(batch_allocation_benchmark PRIVATE
+    -O3
+    -march=native
+    -mtune=native
+    -fno-omit-frame-pointer  # For profiling
+)
+
 # Memory pool latency benchmark (requires x86_64 for rdtsc)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     add_executable(memory_pool_latency_benchmark

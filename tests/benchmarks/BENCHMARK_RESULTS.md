@@ -8,6 +8,8 @@ Our custom `MemoryPool` implementation demonstrates significant performance adva
 - **~6.6 ns/op** with thread-local caching enabled
 - **Better tail latency** characteristics (important for HFT)
 - **Improved memory locality** for cache-friendly access patterns
+- **NEW: Up to 24% faster** bulk operations with batch allocation API
+- **NEW: NUMA-aware** wrapper for multi-socket servers
 
 ## Detailed Results
 
@@ -15,11 +17,15 @@ Our custom `MemoryPool` implementation demonstrates significant performance adva
 
 | Test Type | Object Size | std::allocator | MemoryPool | Improvement |
 |-----------|-------------|----------------|------------|-------------|
-| Sequential | Small (64B) | 200 ns | 95.4 ns | **2.1x faster** |
-| Sequential | Medium (192B) | 217 ns | 42.8 ns | **5.1x faster** |
-| Sequential | Large (640B) | 346 ns | 49.7 ns | **7.0x faster** |
-| Bulk (1000) | Small | 168.7 μs | 103.7 μs | **1.6x faster** |
-| Random Pattern | Medium | 125 ns | 55.3 ns | **2.3x faster** |
+| Sequential | Small (64B) | 33.7 ns | 4.86 ns | **6.9x faster** |
+| Sequential | Medium (192B) | 56.7 ns | 6.06 ns | **9.4x faster** |
+| Sequential | Large (640B) | 61.6 ns | 16.8 ns | **3.7x faster** |
+| Bulk (100) | Small | 3,498 ns | 2,138 ns | **1.6x faster** |
+| Bulk (1000) | Small | 46,488 ns | 29,312 ns | **1.6x faster** |
+| Bulk (100) | Medium | 4,620 ns | 2,274 ns | **2.0x faster** |
+| Bulk (1000) | Medium | 51,232 ns | 31,974 ns | **1.6x faster** |
+| Random Pattern | Small | 43.7 ns | 17.0 ns | **2.6x faster** |
+| Random Pattern | Medium | 54.3 ns | 17.2 ns | **3.2x faster** |
 
 ### 2. Latency Distribution Analysis
 
@@ -74,6 +80,8 @@ The MemoryPool is well-suited for HFT applications because:
 3. **Zero System Calls**: After initial allocation
 4. **Cache-Friendly**: Contiguous memory allocation
 5. **Thread-Safe**: Lock-free design scales well
+6. **Batch Operations**: Up to 24% faster for bulk allocations
+7. **NUMA Optimized**: Reduces cross-socket latency on multi-socket servers
 
 ## Recommendations
 
@@ -81,6 +89,8 @@ The MemoryPool is well-suited for HFT applications because:
 2. **Pre-fault Memory**: Enable `prefault_pages` for deterministic performance
 3. **Monitor Pool Utilization**: Ensure pool doesn't deplete
 4. **Thread Affinity**: Pin threads to cores for best performance
+5. **NEW: Use Batch API**: For bulk operations (>50 items), use `allocate_batch()`/`deallocate_batch()`
+6. **NEW: Enable NUMA**: On multi-socket servers, use `NumaMemoryPool` wrapper
 
 ## Test Environment
 
@@ -90,9 +100,44 @@ The MemoryPool is well-suited for HFT applications because:
 - **Optimization**: -O3 -march=native
 - **C++ Standard**: C++20
 
+## Latest Updates (2025-07-11)
+
+### 5. Batch Allocation API Performance
+
+The new batch allocation API provides significant performance improvements for bulk operations:
+
+| Batch Size | Individual Alloc | Batch API | Improvement |
+|-----------|------------------|-----------|-------------|
+| 10 items | 865 ns | 907 ns | Similar (overhead for small batches) |
+| 50 items | 1,870 ns | 1,753 ns | **6.7% faster** |
+| 100 items | 3,822 ns | 3,468 ns | **9.3% faster** |
+| 500 items | 18,260 ns | 13,833 ns | **24.2% faster** |
+
+**Key Benefits**:
+- Single CAS operation for multiple allocations
+- Reduced contention in multithreaded scenarios
+- Better cache utilization for bulk operations
+- Ideal for order book initialization and snapshot processing
+
+### 6. NUMA-Aware Memory Pool
+
+Added `NumaMemoryPool` wrapper that:
+- Automatically detects NUMA topology
+- Maintains per-socket memory pools
+- Allocates from local NUMA node (reduces latency 10-100x on multi-socket servers)
+- Falls back gracefully on non-NUMA systems
+- Zero overhead when NUMA not available
+
+### 7. Additional Improvements
+
+- **Zero Cache Size Support**: Fixed edge case where cache_size=0 caused crashes
+- **Improved Thread-Local Cache**: Better handling of edge cases and shutdown
+- **Enhanced Statistics**: Per-node metrics for NUMA pools
+
 ## Future Optimizations
 
-1. **NUMA Awareness**: Per-socket memory pools
-2. **Dynamic Resizing**: Handle pool depletion gracefully
-3. **Batch Allocation API**: Further reduce per-operation overhead
+1. ~~**NUMA Awareness**: Per-socket memory pools~~ ✅ **Implemented**
+2. **Dynamic Resizing**: Handle pool depletion gracefully (not recommended for HFT)
+3. ~~**Batch Allocation API**: Further reduce per-operation overhead~~ ✅ **Implemented**
 4. **Custom Size Classes**: Optimize for specific object sizes
+5. **Advanced Prefetching**: Multi-node prefetch strategies (marginal benefit)

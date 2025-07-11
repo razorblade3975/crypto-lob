@@ -830,3 +830,362 @@ TEST_P(ParameterizedMemoryPoolTest, CachePressureStress) {
 
     EXPECT_EQ(pool.allocated_objects(), 0);
 }
+
+// Additional test: Thread Cleanup Order
+TEST(MemoryPoolTest, ThreadCleanupOrder) {
+    // This test verifies that thread-local caches are properly cleaned up
+    // when threads exit before the pool is destroyed
+
+    auto pool = std::make_unique<MemoryPool<MediumObject>>(
+        1000, PoolDepletionPolicy::THROW_EXCEPTION, CacheConfig{64, 32, false, false});
+
+    std::atomic<bool> thread_done{false};
+    std::atomic<size_t> allocated_count{0};
+
+    // Thread that allocates objects but doesn't deallocate them all
+    std::thread worker([&]() {
+        // Allocate objects to populate thread-local cache
+        std::vector<MediumObject*> objects;
+        for (int i = 0; i < 50; ++i) {
+            auto* obj = pool->allocate();
+            EXPECT_NE(obj, nullptr);
+            objects.push_back(obj);
+            allocated_count.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // Deallocate some (but not all) to leave objects in thread-local cache
+        for (int i = 0; i < 30; ++i) {
+            pool->deallocate(objects[i]);
+            allocated_count.fetch_sub(1, std::memory_order_relaxed);
+        }
+
+        // Thread exits here with 20 objects still "allocated" in its cache
+        thread_done = true;
+    });
+
+    worker.join();
+    EXPECT_TRUE(thread_done);
+
+    // At this point, the thread is gone but objects might still be in its cache
+    // The pool should handle this gracefully
+
+    // Verify we can still use the pool from main thread
+    std::vector<MediumObject*> main_objects;
+    for (int i = 0; i < 100; ++i) {
+        auto* obj = pool->allocate();
+        EXPECT_NE(obj, nullptr);
+        main_objects.push_back(obj);
+    }
+
+    // Clean up main thread allocations
+    for (auto* obj : main_objects) {
+        pool->deallocate(obj);
+    }
+
+    // Flush any remaining cached objects
+    pool->flush_thread_cache();
+
+    // Note: We expect some objects to be "leaked" from the worker thread's cache
+    // This is by design - thread-local caches can't be reclaimed after thread exit
+    size_t leaked_objects = allocated_count.load();
+    if (leaked_objects > 0) {
+        std::cerr << "Note: " << leaked_objects << " objects leaked from exited thread's cache (expected behavior)"
+                  << std::endl;
+    }
+
+    // Pool destruction should handle remaining cleanup without crash
+    EXPECT_NO_THROW(pool.reset());
+}
+
+// Additional test: Multiple Thread Cleanup
+TEST(MemoryPoolTest, MultipleThreadCleanup) {
+    auto pool = std::make_unique<MemoryPool<MediumObject>>(
+        10000, PoolDepletionPolicy::THROW_EXCEPTION, CacheConfig{256, 64, false, false});
+
+    const int num_threads = 4;
+    std::atomic<int> threads_done{0};
+    std::vector<std::thread> workers;
+
+    // Start multiple threads that allocate and partially deallocate
+    for (int t = 0; t < num_threads; ++t) {
+        workers.emplace_back([&, thread_id = t]() {
+            std::random_device rd;
+            std::mt19937 gen(rd() ^ thread_id);
+            std::uniform_int_distribution<> alloc_dist(100, 300);
+            std::uniform_int_distribution<> free_ratio_dist(30, 70);
+
+            int alloc_count = alloc_dist(gen);
+            std::vector<MediumObject*> objects;
+
+            // Allocate random number of objects
+            for (int i = 0; i < alloc_count; ++i) {
+                try {
+                    auto* obj = pool->allocate();
+                    if (obj) {
+                        objects.push_back(obj);
+                        // Store thread ID in first element for verification
+                        obj->data[0] = thread_id;
+                    }
+                } catch (const std::bad_alloc&) {
+                    break;
+                }
+            }
+
+            // Free a random percentage
+            int free_percent = free_ratio_dist(gen);
+            int free_count = (objects.size() * free_percent) / 100;
+
+            for (int i = 0; i < free_count; ++i) {
+                pool->deallocate(objects[i]);
+            }
+
+            // Thread exits with remaining objects in cache
+            threads_done.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    // Wait for all worker threads
+    for (auto& t : workers) {
+        t.join();
+    }
+
+    EXPECT_EQ(threads_done.load(), num_threads);
+
+    // Main thread continues to use the pool
+    std::vector<MediumObject*> main_objects;
+
+    // Try to allocate more objects
+    int allocated = 0;
+    while (allocated < 1000) {
+        try {
+            auto* obj = pool->allocate();
+            if (obj) {
+                main_objects.push_back(obj);
+                allocated++;
+            }
+        } catch (const std::bad_alloc&) {
+            // Pool might be exhausted due to leaked caches
+            break;
+        }
+    }
+
+    // Clean up what we can
+    for (auto* obj : main_objects) {
+        pool->deallocate(obj);
+    }
+
+    // Verify pool destruction works correctly
+    EXPECT_NO_THROW(pool.reset());
+}
+
+// Additional test: Configuration edge cases
+TEST(MemoryPoolTest, ConfigurationEdgeCases) {
+    // Note: FreeNode requires objects to be at least sizeof(TaggedPointer128<FreeNode>)
+    // which is typically 16 bytes, and aligned to CACHELINE_SIZE (64 bytes).
+    // MediumObject is already 64 bytes and properly aligned.
+
+    // Verify our test object meets requirements
+    ASSERT_GE(sizeof(MediumObject), 64);
+    ASSERT_EQ(alignof(MediumObject), 64);
+
+    // Test 1: Zero cache size
+    {
+        CacheConfig zero_cache_config{0, 32, false, false};  // cache_size = 0
+        // After constructor adjustments: cache_size=0, batch_size=1 (min), shrink_threshold=1
+        try {
+            MemoryPool<MediumObject> pool(100, PoolDepletionPolicy::THROW_EXCEPTION, zero_cache_config);
+
+            // Should still work, just without thread-local caching
+            auto* obj1 = pool.allocate();
+            auto* obj2 = pool.allocate();
+            ASSERT_NE(obj1, nullptr);
+            ASSERT_NE(obj2, nullptr);
+
+            pool.deallocate(obj1);
+            pool.deallocate(obj2);
+
+            // With zero cache size, objects should go directly back to pool
+            EXPECT_EQ(pool.allocated_objects(), 0);
+        } catch (const std::exception& e) {
+            FAIL() << "Unexpected exception in zero cache size test: " << e.what();
+        }
+    }
+
+    // Test 2: Batch size larger than cache size
+    {
+        // Note: CacheConfig constructor will adjust batch_size to cache_size/2 when batch_size > cache_size
+        CacheConfig large_batch_config{32, 128, false, false};  // batch_size > cache_size
+        // After adjustment: cache_size=32, batch_size=16
+        MemoryPool<MediumObject> pool(1000, PoolDepletionPolicy::THROW_EXCEPTION, large_batch_config);
+
+        // Allocate enough to trigger batch refill
+        std::vector<MediumObject*> objects;
+        for (int i = 0; i < 50; ++i) {
+            auto* obj = pool.allocate();
+            ASSERT_NE(obj, nullptr);
+            objects.push_back(obj);
+        }
+
+        // Deallocate all
+        for (auto* obj : objects) {
+            pool.deallocate(obj);
+        }
+
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+
+    // Test 3: Batch size zero (should use default or minimum)
+    {
+        CacheConfig zero_batch_config{64, 0, false, false};  // batch_size = 0
+        MemoryPool<MediumObject> pool(500, PoolDepletionPolicy::THROW_EXCEPTION, zero_batch_config);
+
+        // Should still function correctly
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr);
+        pool.deallocate(obj);
+
+        // Flush thread cache even though batch_size was adjusted
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+
+    // Test 4: Very small pool with large cache
+    {
+        CacheConfig large_cache_config{1000, 100, false, false};  // cache larger than pool
+        MemoryPool<MediumObject> pool(10, PoolDepletionPolicy::THROW_EXCEPTION, large_cache_config);
+
+        // Allocate entire pool
+        std::vector<MediumObject*> objects;
+        for (size_t i = 0; i < 10; ++i) {
+            auto* obj = pool.allocate();
+            ASSERT_NE(obj, nullptr);
+            objects.push_back(obj);
+        }
+
+        // Should be exhausted
+        EXPECT_THROW(pool.allocate(), std::bad_alloc);
+
+        // Return all objects
+        for (auto* obj : objects) {
+            pool.deallocate(obj);
+        }
+
+        // Should be able to allocate again
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr);
+        pool.deallocate(obj);
+
+        // Flush thread cache before checking
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+
+    // Test 5: Equal cache size and batch size
+    {
+        CacheConfig equal_config{64, 64, false, false};  // cache_size == batch_size
+        MemoryPool<MediumObject> pool(1000, PoolDepletionPolicy::THROW_EXCEPTION, equal_config);
+
+        // Allocate exactly one batch worth
+        std::vector<MediumObject*> batch;
+        for (size_t i = 0; i < 64; ++i) {
+            auto* obj = pool.allocate();
+            ASSERT_NE(obj, nullptr);
+            batch.push_back(obj);
+        }
+
+        // Deallocate all - should fill cache exactly
+        for (auto* obj : batch) {
+            pool.deallocate(obj);
+        }
+
+        // Allocate again - should come from cache
+        for (size_t i = 0; i < 64; ++i) {
+            auto* obj = pool.allocate();
+            ASSERT_NE(obj, nullptr);
+            batch[i] = obj;
+        }
+
+        // Cleanup
+        for (auto* obj : batch) {
+            pool.deallocate(obj);
+        }
+
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+
+    // Test 6: Capacity of 1 (minimal pool)
+    {
+        CacheConfig minimal_config{1, 1, false, false};
+        MemoryPool<MediumObject> pool(1, PoolDepletionPolicy::THROW_EXCEPTION, minimal_config);
+
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr);
+
+        // Should be exhausted
+        EXPECT_THROW(pool.allocate(), std::bad_alloc);
+
+        pool.deallocate(obj);
+
+        // Should work again
+        obj = pool.allocate();
+        ASSERT_NE(obj, nullptr);
+        pool.deallocate(obj);
+
+        // Flush thread cache before checking
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+
+    // Test 7: Different depletion policies with edge configs
+    {
+        // TERMINATE_PROCESS with minimal config
+        CacheConfig config{2, 1, false, false};
+        MemoryPool<MediumObject> terminate_pool(5, PoolDepletionPolicy::TERMINATE_PROCESS, config);
+
+        // Allocate some but not all
+        auto* obj1 = terminate_pool.allocate();
+        auto* obj2 = terminate_pool.allocate();
+        ASSERT_NE(obj1, nullptr);
+        ASSERT_NE(obj2, nullptr);
+
+        terminate_pool.deallocate(obj1);
+        terminate_pool.deallocate(obj2);
+
+        // Flush and verify
+        terminate_pool.flush_thread_cache();
+        EXPECT_EQ(terminate_pool.allocated_objects(), 0);
+
+        // Note: We can't test actual termination without crashing the test
+    }
+
+    // Test 8: Huge pages flag (may not actually use huge pages without setup)
+    {
+        CacheConfig huge_page_config{64, 32, true, false};  // use_huge_pages = true
+        // Should construct successfully even if huge pages aren't available
+        MemoryPool<MediumObject> pool(1000, PoolDepletionPolicy::THROW_EXCEPTION, huge_page_config);
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr);
+        pool.deallocate(obj);
+
+        // Flush thread cache before checking
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+
+    // Test 9: Prefault pages flag
+    {
+        CacheConfig prefault_config{64, 32, false, true};  // prefault_pages = true
+        MemoryPool<MediumObject> pool(100, PoolDepletionPolicy::THROW_EXCEPTION, prefault_config);
+
+        // Should work normally
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr);
+        pool.deallocate(obj);
+
+        // Flush thread cache before checking
+        pool.flush_thread_cache();
+        EXPECT_EQ(pool.allocated_objects(), 0);
+    }
+}

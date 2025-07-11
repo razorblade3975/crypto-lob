@@ -57,6 +57,15 @@ find_package(Threads REQUIRED)
 find_package(simdjson REQUIRED)
 find_package(tomlplusplus REQUIRED)
 
+# Optional: Find NUMA library for NUMA-aware memory pools
+find_library(NUMA_LIBRARY numa)
+if(NUMA_LIBRARY)
+    message(STATUS "Found NUMA library: ${NUMA_LIBRARY}")
+    add_compile_definitions(HAVE_NUMA)
+else()
+    message(STATUS "NUMA library not found - NUMA support disabled")
+endif()
+
 # Include directories
 include_directories(src)
 
@@ -104,6 +113,11 @@ if(BUILD_TESTS)
         GTest::gtest
         GTest::gtest_main
     )
+    
+    # Link NUMA library if found
+    if(NUMA_LIBRARY)
+        target_link_libraries(crypto-lob-tests ${NUMA_LIBRARY})
+    endif()
     
     # Include directories for tests
     target_include_directories(crypto-lob-tests

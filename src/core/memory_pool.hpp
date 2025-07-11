@@ -317,7 +317,7 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
 
     // Refill cache from global pool (batch operation)
     void refill_from_global() {
-        if (!global_pool_) [[unlikely]]
+        if (!global_pool_ || cache_size_ == 0 || !cache_) [[unlikely]]
             return;
 
         size_t objects_to_get = std::min(batch_size_, cache_size_ - current_size_);
@@ -340,7 +340,7 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
 
     // Flush objects to global pool (batch operation)
     void flush_to_global() {
-        if (!global_pool_ || current_size_ == 0) [[unlikely]]
+        if (!global_pool_ || current_size_ == 0 || cache_size_ == 0 || !cache_) [[unlikely]]
             return;
 
         if (global_pool_->is_shutting_down()) [[unlikely]] {
@@ -383,7 +383,7 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
   public:
     explicit ThreadLocalCache(Pool* pool, const CacheConfig& config = CacheConfig{})
         : ThreadLocalCacheBase{},
-          cache_(std::make_unique<void*[]>(config.cache_size)),
+          cache_(config.cache_size > 0 ? std::make_unique<void*[]>(config.cache_size) : nullptr),
           cache_size_(config.cache_size),
           batch_size_(config.batch_size),
           current_size_(0),
@@ -428,18 +428,23 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
         allocation_count_++;
 
         // Hot path: Check local cache first - this is the common case
-        if (current_size_ > 0) [[likely]] {
+        if (current_size_ > 0 && cache_) [[likely]] {
             cache_hits_++;
             return cache_[--current_size_];
         }
 
         // Cold path: Refill from global pool - this is rare
-        if (current_size_ == 0) [[unlikely]] {
+        if (current_size_ == 0 && cache_size_ > 0) [[unlikely]] {
             refill_from_global();
 
             if (current_size_ > 0) [[likely]] {
                 return cache_[--current_size_];
             }
+        }
+
+        // No cache or cache exhausted - go directly to global pool
+        if (cache_size_ == 0) {
+            return global_pool_->allocate_raw();
         }
 
         // Route to depletion handler
@@ -454,13 +459,20 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
         deallocation_count_++;
 
         // Hot path: Store in local cache if space available - common case
-        if (current_size_ < cache_size_) [[likely]] {
+        if (current_size_ < cache_size_ && cache_) [[likely]] {
             cache_[current_size_++] = ptr;
 
             // Periodically check if we should shrink - uncommon
             if ((deallocation_count_ & 0xFF) == 0) [[unlikely]] {
                 maybe_shrink_cache();
             }
+            return;
+        }
+
+        // No cache or cache is full
+        if (cache_size_ == 0) {
+            // No cache - go directly to global pool
+            global_pool_->deallocate_raw(ptr);
             return;
         }
 
@@ -520,6 +532,10 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
 
     // Force flush all objects back to global pool
     void flush_all_to_global() {
+        if (!cache_ || cache_size_ == 0) [[unlikely]] {
+            return;  // No cache to flush
+        }
+
         if (!global_pool_->is_shutting_down()) [[likely]] {
             while (current_size_ > 0) {
                 global_pool_->deallocate_raw(cache_[--current_size_]);
@@ -841,14 +857,117 @@ class MemoryPool final {
         return nullptr;  // Never reached
     }
 
+    // Batch allocate raw memory from global pool
+    // Returns number of objects actually allocated
+    [[nodiscard]] size_t allocate_raw_batch(void** out_ptrs, size_t count) {
+        if (is_shutting_down() || count == 0) [[unlikely]] {
+            return 0;
+        }
+
+        size_t allocated = 0;
+        auto current = free_head_.load();
+
+        // Try to grab 'count' nodes in a single CAS operation
+        while (current.ptr != nullptr && allocated < count) [[likely]] {
+            // Walk the free list to find the nth node
+            FreeNode* nth_node = current.ptr;
+            size_t walk_count = 1;
+
+            // Walk up to 'count' nodes or until we hit the end
+            while (walk_count < count && nth_node->next.load().ptr != nullptr) {
+                nth_node = nth_node->next.load().ptr;
+                walk_count++;
+            }
+
+            // Get the node after our batch
+            auto new_head = nth_node->next.load();
+
+            // Try to update head to point after our batch
+            if (free_head_.compare_exchange_weak(
+                    current, new_head, std::memory_order_acq_rel, std::memory_order_acquire)) [[likely]] {
+                // Success! Now collect the nodes
+                FreeNode* node = current.ptr;
+                for (size_t i = 0; i < walk_count; ++i) {
+                    out_ptrs[allocated++] = static_cast<void*>(node);
+                    if (i < walk_count - 1) {
+                        node = node->next.load().ptr;
+                    }
+                }
+                allocated_count_.fetch_add(walk_count, std::memory_order_relaxed);
+                break;
+            }
+            // CAS failed, retry with updated current value
+        }
+
+        return allocated;
+    }
+
+    // Batch deallocate raw memory to global pool
+    void deallocate_raw_batch(void** ptrs, size_t count) noexcept {
+        if (count == 0 || is_shutting_down()) [[unlikely]] {
+            return;
+        }
+
+        // Build a linked list from the batch
+        FreeNode* batch_head = nullptr;
+        FreeNode* batch_tail = nullptr;
+        size_t valid_count = 0;
+
+        for (size_t i = 0; i < count; ++i) {
+            if (!ptrs[i] || !owns(ptrs[i])) [[unlikely]] {
+                continue;
+            }
+
+            auto* node = new (ptrs[i]) FreeNode();
+            if (!batch_head) {
+                batch_head = batch_tail = node;
+            } else {
+                batch_tail->next.set(node, 0);
+                batch_tail = node;
+            }
+            valid_count++;
+        }
+
+        if (valid_count == 0) [[unlikely]] {
+            return;
+        }
+
+        // Link the batch into the free list
+        auto current = free_head_.load();
+        using NodePtr = typename TaggedPointer128<FreeNode>::TaggedPtr;
+
+        NodePtr new_head;
+        do {
+            batch_tail->next.set(current.ptr, current.tag);
+            new_head = NodePtr{batch_head, current.tag + 1};
+        } while (
+            !free_head_.compare_exchange_weak(current, new_head, std::memory_order_acq_rel, std::memory_order_acquire));
+
+        allocated_count_.fetch_sub(valid_count, std::memory_order_relaxed);
+    }
+
     // High-level allocation interface (uses thread-local caching)
     [[clang::always_inline]] [[nodiscard]] T* allocate() {
+        if (cache_config_.cache_size == 0) [[unlikely]] {
+            // Bypass cache for zero cache size
+            void* raw = allocate_raw();
+            return raw ? static_cast<T*>(raw) : nullptr;
+        }
         auto& cache = get_thread_cache(this, cache_config_);
         return cache.allocate();
     }
 
     // High-level deallocation interface (uses thread-local caching)
     [[clang::always_inline]] void deallocate(T* ptr) {
+        if (!ptr) [[unlikely]]
+            return;
+
+        if (cache_config_.cache_size == 0) [[unlikely]] {
+            // Bypass cache for zero cache size
+            ptr->~T();  // Destroy object
+            deallocate_raw(static_cast<void*>(ptr));
+            return;
+        }
         auto& cache = get_thread_cache(this, cache_config_);
         cache.deallocate(ptr);
     }
@@ -864,6 +983,69 @@ class MemoryPool final {
     void destroy(T* ptr) {
         auto& cache = get_thread_cache(this, cache_config_);
         cache.destroy(ptr);
+    }
+
+    // High-level batch allocation interface (uses thread-local caching)
+    // Returns vector of allocated pointers (may be less than requested)
+    [[nodiscard]] std::vector<T*> allocate_batch(size_t count) {
+        std::vector<T*> result;
+        if (count == 0) [[unlikely]] {
+            return result;
+        }
+
+        result.reserve(count);
+        auto& cache = get_thread_cache(this, cache_config_);
+
+        // First, try to satisfy from thread-local cache
+        while (result.size() < count) {
+            T* ptr = cache.allocate();
+            if (!ptr) [[unlikely]] {
+                break;
+            }
+            result.push_back(ptr);
+        }
+
+        // If we need more, go directly to global pool for efficiency
+        if (result.size() < count) {
+            size_t remaining = count - result.size();
+            std::vector<void*> raw_ptrs(remaining);
+            size_t allocated = allocate_raw_batch(raw_ptrs.data(), remaining);
+
+            for (size_t i = 0; i < allocated; ++i) {
+                result.push_back(static_cast<T*>(raw_ptrs[i]));
+            }
+        }
+
+        return result;
+    }
+
+    // High-level batch deallocation interface (uses thread-local caching)
+    void deallocate_batch(const std::vector<T*>& ptrs) {
+        if (ptrs.empty()) [[unlikely]] {
+            return;
+        }
+
+        auto& cache = get_thread_cache(this, cache_config_);
+        for (T* ptr : ptrs) {
+            if (ptr) [[likely]] {
+                cache.deallocate(ptr);
+            }
+        }
+    }
+
+    // Batch construct objects in allocated memory
+    template <typename... Args>
+    [[nodiscard]] std::vector<T*> construct_batch(size_t count, Args&&... args) {
+        auto ptrs = allocate_batch(count);
+        for (T* ptr : ptrs) {
+            new (ptr) T(std::forward<Args>(args)...);
+        }
+        return ptrs;
+    }
+
+    // Batch destroy and deallocate objects
+    void destroy_batch(const std::vector<T*>& ptrs) {
+        deallocate_batch(ptrs);  // deallocate already calls destructors
     }
 
     // Pool statistics

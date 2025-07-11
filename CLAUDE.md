@@ -496,3 +496,4 @@ ctest -V
 - Think hard to not introducing new bugs when proposing a fix to the existing bugs.
 - Run any code in the dev-container.
 - Always think hard to present multiple options as you can. Don't rush to fix. Ultrathink and compare pros and cons of each option.
+- Always use @scripts/build.sh to build. Remember always build in docker.
