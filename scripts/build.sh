@@ -223,6 +223,12 @@ fi
 if [[ "$RUN_TESTS" == true ]]; then
     log_info "Running unit tests..."
     
+    # Set ASAN options if using AddressSanitizer
+    if [[ "$SANITIZER" == "ASAN" ]]; then
+        export ASAN_OPTIONS="alloc_dealloc_mismatch=0"
+        log_info "Setting ASAN_OPTIONS=$ASAN_OPTIONS (workaround for libc++ bug)"
+    fi
+    
     # Run the main unit test executable directly, excluding benchmarks
     # The project has crypto-lob-tests for unit tests and separate benchmark executables
     if [[ -f "./crypto-lob-tests" ]]; then
