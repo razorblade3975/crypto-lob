@@ -92,6 +92,8 @@ jobs:
           echo '🧪 Running ${{ matrix.build_type }} tests with ${{ matrix.sanitizer }} sanitizer...' && \
           if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then \
             export TSAN_OPTIONS='suppressions=/workspace/config/tsan.suppressions'; \
+          elif [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then \
+            export ASAN_OPTIONS='alloc_dealloc_mismatch=0'; \
           fi && \
           ctest -V --output-on-failure
         "

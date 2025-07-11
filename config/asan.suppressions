@@ -1,0 +1,27 @@
+# AddressSanitizer suppression file for crypto-lob
+#
+# This file contains suppressions for known false positives in AddressSanitizer.
+#
+# IMPORTANT: alloc-dealloc-mismatch libc++ issue
+# ===============================================
+# There is a known bug in libc++ where standard exceptions like std::invalid_argument
+# trigger false positive alloc-dealloc-mismatch errors. This happens because exception
+# objects are allocated with operator new but freed with free() in the libc++ runtime.
+#
+# See: https://github.com/llvm/llvm-project/issues/59432
+#
+# Unfortunately, ASAN suppressions don't support suppressing alloc-dealloc-mismatch
+# errors. The only workaround is to disable this check globally using:
+#   ASAN_OPTIONS=alloc_dealloc_mismatch=0
+#
+# This is set in our CI configuration for ASAN builds. While this disables a useful
+# check, it's necessary until the libc++ bug is fixed.
+#
+# Alternative solutions considered:
+# 1. Using libstdc++ instead of libc++ - Not viable as we're committed to Clang/libc++
+# 2. Static linking libc++ - Doesn't fully resolve the issue
+# 3. Modifying tests to avoid exceptions - Would reduce test coverage
+#
+# The current solution (disabling the check) is the pragmatic choice that allows us
+# to continue using ASAN for other important checks while working around this specific
+# libc++ bug.
