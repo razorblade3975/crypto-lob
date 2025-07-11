@@ -62,7 +62,7 @@ enum class PrefetchHint : int {
 // Prefetch memory location to reduce cache miss latency
 // addr: Memory address to prefetch
 // hint: Temporal locality hint for the CPU cache hierarchy
-inline void prefetch(const void* addr, PrefetchHint hint = PrefetchHint::READ_TEMPORAL) noexcept {
+inline void cache_prefetch(const void* addr, PrefetchHint hint = PrefetchHint::READ_TEMPORAL) noexcept {
     // __builtin_prefetch requires compile-time constant arguments, so we use a switch
     switch (hint) {
         case PrefetchHint::READ_TEMPORAL:
