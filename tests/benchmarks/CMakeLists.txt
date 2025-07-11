@@ -85,7 +85,6 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     # Enable CPU-specific optimizations
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(memory_pool_latency_benchmark PRIVATE
-            -fcoroutines-ts
             -fvectorize
             -fslp-vectorize
             -ffast-math
