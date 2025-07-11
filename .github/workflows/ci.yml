@@ -7,9 +7,38 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  docker-build-test:
-    name: Docker Build, Test & Analyze
+  # Fast formatting check - runs first to fail fast
+  format-check:
+    name: Code Formatting
     runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install clang-format
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format-17
+    
+    - name: Check formatting
+      run: |
+        find src tests -name '*.cpp' -o -name '*.hpp' | xargs clang-format-17 --dry-run --Werror
+
+  # Main build job with optimizations
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-22.04
+    needs: format-check
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+        include:
+          - build_type: Debug
+            enable_sanitizers: "ON"
+            conan_build_type: "Debug"
+          - build_type: Release
+            enable_sanitizers: "OFF"
+            conan_build_type: "Release"
     
     steps:
     - name: Checkout code
@@ -22,33 +51,98 @@ jobs:
       uses: actions/cache@v4
       with:
         path: /tmp/.buildx-cache
-        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        key: ${{ runner.os }}-buildx-${{ hashFiles('Dockerfile', 'docker-compose.yml') }}
         restore-keys: |
           ${{ runner.os }}-buildx-
     
+    - name: Cache Conan packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.conan2
+        key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-${{ matrix.conan_build_type }}
+        restore-keys: |
+          conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-
+          conan-${{ runner.os }}-
+    
     - name: Build development container
       run: |
-        docker compose build crypto-lob-dev
+        docker compose build --cache-from type=local,src=/tmp/.buildx-cache \
+                             --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+                             crypto-lob-dev
+        # Move cache to avoid growing cache
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
     
-    # Code Quality Checks
-    - name: Code formatting check
+    - name: Mount Conan cache and build
       run: |
-        docker compose run --rm crypto-lob-dev bash -c "
+        # Create Conan cache directory on host if it doesn't exist
+        mkdir -p ~/.conan2
+        
+        docker compose run --rm \
+          -v ~/.conan2:/root/.conan2:cached \
+          crypto-lob-dev bash -c "
           cd /workspace && \
-          find src tests -name '*.cpp' -o -name '*.hpp' | xargs clang-format-17 --dry-run --Werror && \
-          echo '✅ Code formatting check passed'
+          echo '📦 Installing Conan dependencies...' && \
+          conan install . --output-folder=build --build=missing \
+            -s compiler=clang -s compiler.version=17 \
+            -s compiler.libcxx=libc++ -s compiler.cppstd=20 \
+            -s build_type=${{ matrix.conan_build_type }} && \
+          cd build && \
+          echo '🔨 Configuring CMake...' && \
+          cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+                -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
+                -DCMAKE_C_COMPILER=clang-17 \
+                -DCMAKE_CXX_COMPILER=clang++-17 \
+                -DBUILD_TESTS=ON \
+                -DENABLE_SANITIZERS=${{ matrix.enable_sanitizers }} \
+                -G Ninja .. && \
+          echo '⚡ Building with Ninja...' && \
+          ninja -j\$(nproc) && \
+          echo '🧪 Running ${{ matrix.build_type }} tests...' && \
+          ctest -V --output-on-failure
         "
     
-    - name: Static analysis with clang-tidy
+    - name: Upload test results
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.build_type }}
+        path: |
+          build/Testing/
+          *.log
+
+  # Static analysis as separate job (only run on one configuration)
+  static-analysis:
+    name: Static Analysis  
+    runs-on: ubuntu-22.04
+    needs: format-check
+    if: github.event_name == 'pull_request'  # Only on PRs to save time
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Cache Conan packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.conan2
+        key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-Debug
+        restore-keys: |
+          conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-
+          conan-${{ runner.os }}-
+
+    - name: Run clang-tidy
       run: |
-        docker compose run --rm crypto-lob-dev bash -c "
+        mkdir -p ~/.conan2
+        docker compose run --rm \
+          -v ~/.conan2:/root/.conan2:cached \
+          crypto-lob-dev bash -c "
           cd /workspace && \
-          # First install dependencies for clang-tidy
           conan install . --output-folder=build_tidy --build=missing \
             -s compiler=clang -s compiler.version=17 \
-            -s compiler.libcxx=libc++ -s compiler.cppstd=20 && \
+            -s compiler.libcxx=libc++ -s compiler.cppstd=20 \
+            -s build_type=Debug && \
           cd build_tidy && \
-          # Generate compile_commands.json
           cmake -DCMAKE_BUILD_TYPE=Debug \
                 -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
                 -DCMAKE_C_COMPILER=clang-17 \
@@ -56,57 +150,24 @@ jobs:
                 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                 -G Ninja .. && \
           cd /workspace && \
-          # Run clang-tidy
           find src tests -name '*.cpp' | \
           xargs clang-tidy-17 -p build_tidy/ \
                 --config-file=.clang-tidy \
                 --header-filter='.*' || \
-          echo '⚠️  Clang-tidy warnings found (non-blocking for now)'
+          echo '⚠️  Clang-tidy warnings found (non-blocking)'
         "
+
+  # Production container build (only on main branch)
+  production-build:
+    name: Production Build
+    runs-on: ubuntu-22.04
+    needs: [build-and-test]
+    if: github.ref == 'refs/heads/main'
     
-    # Debug Build with Sanitizers
-    - name: Build and test (Debug with sanitizers)
-      run: |
-        docker compose run --rm crypto-lob-dev bash -c "
-          cd /workspace && \
-          conan install . --output-folder=build_debug --build=missing \
-            -s compiler=clang -s compiler.version=17 \
-            -s compiler.libcxx=libc++ -s compiler.cppstd=20 \
-            -s build_type=Debug && \
-          cd build_debug && \
-          cmake -DCMAKE_BUILD_TYPE=Debug \
-                -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
-                -DCMAKE_C_COMPILER=clang-17 \
-                -DCMAKE_CXX_COMPILER=clang++-17 \
-                -DBUILD_TESTS=ON \
-                -DENABLE_SANITIZERS=ON \
-                -G Ninja .. && \
-          ninja -j\$(nproc) && \
-          echo '🧪 Running Debug tests with sanitizers...' && \
-          ctest -V --output-on-failure
-        "
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
     
-    # Release Build
-    - name: Build and test (Release)
-      run: |
-        docker compose run --rm crypto-lob-dev bash -c "
-          cd /workspace && \
-          conan install . --output-folder=build --build=missing \
-            -s compiler=clang -s compiler.version=17 \
-            -s compiler.libcxx=libc++ -s compiler.cppstd=20 && \
-          cd build && \
-          cmake -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
-                -DCMAKE_C_COMPILER=clang-17 \
-                -DCMAKE_CXX_COMPILER=clang++-17 \
-                -DBUILD_TESTS=ON \
-                -G Ninja .. && \
-          ninja -j\$(nproc) && \
-          echo '🚀 Running Release tests...' && \
-          ctest -V --output-on-failure
-        "
-    
-    # Production Container Build
     - name: Build production container
       run: |
         docker compose build crypto-lob-prod
@@ -114,13 +175,4 @@ jobs:
     - name: Test production container startup
       run: |
         docker compose run --rm crypto-lob-prod /crypto-lob --version || echo "No version flag implemented yet"
-    
-    - name: Upload test results
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results
-        path: |
-          build*/Testing/
-          *.log
 
