@@ -56,7 +56,7 @@ jobs:
         conan profile update settings.build_type=${{ matrix.build_type }} default
     
     - name: Cache Conan packages
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.conan2
         key: ${{ runner.os }}-conan-${{ hashFiles('conanfile.txt') }}-${{ matrix.build_type }}
@@ -95,7 +95,7 @@ jobs:
     
     - name: Upload test results
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-results-${{ matrix.build_type }}
         path: build/Testing/

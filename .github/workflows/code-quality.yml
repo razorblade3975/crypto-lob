@@ -105,7 +105,7 @@ jobs:
         llvm-cov-17 show ./crypto-lob-tests -instr-profile=crypto-lob.profdata > coverage.txt
     
     - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         files: ./build/coverage.txt
         flags: unittests
@@ -136,7 +136,7 @@ jobs:
         lizard src/ tests/ -l cpp --html > complexity_report.html
     
     - name: Upload complexity report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: complexity-report
         path: complexity_report.html
