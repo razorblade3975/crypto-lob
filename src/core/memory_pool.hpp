@@ -698,7 +698,12 @@ class MemoryPool final {
     [[noreturn]] void handle_depletion() const {
         switch (depletion_policy_) {
             case PoolDepletionPolicy::THROW_EXCEPTION:
+#ifdef __cpp_exceptions
                 throw std::bad_alloc();
+#else
+                // When exceptions are disabled, fall back to terminate
+                std::terminate();
+#endif
 
             case PoolDepletionPolicy::TERMINATE_PROCESS:
                 std::terminate();
@@ -732,7 +737,12 @@ class MemoryPool final {
         // Fix #1: Use allocation result to get correct huge page flag
         AllocationResult result = allocate_memory(capacity_, ALIGNMENT);
         if (!result.ptr) [[unlikely]] {
+#ifdef __cpp_exceptions
             throw std::bad_alloc();
+#else
+            // When exceptions are disabled, terminate on allocation failure
+            std::terminate();
+#endif
         }
 
         memory_ = static_cast<std::byte*>(result.ptr);
@@ -1185,7 +1195,12 @@ class PoolPtr {
         }
         T* new_ptr = pool_->construct(std::forward<Args>(args)...);
         if (!new_ptr) [[unlikely]] {
+#ifdef __cpp_exceptions
             throw std::bad_alloc();
+#else
+            // When exceptions are disabled, terminate on allocation failure
+            std::terminate();
+#endif
         }
         ptr_ = new_ptr;
     }
