@@ -8,7 +8,7 @@ set -euo pipefail
 # Default values
 BUILD_TYPE="Release"
 SANITIZER="OFF"
-CLEAN=false
+CLEAN=true # clean up before build by default
 JOBS=$(nproc 2>/dev/null || echo "4")
 VERBOSE=false
 HELP=false
