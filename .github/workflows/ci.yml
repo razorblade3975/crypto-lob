@@ -46,6 +46,10 @@ jobs:
             sanitizer: TSAN
             enable_sanitizers: "TSAN"
             conan_build_type: "Debug"
+          - build_type: Debug
+            sanitizer: OFF
+            enable_sanitizers: "OFF"
+            conan_build_type: "Debug"
           - build_type: Release
             sanitizer: OFF
             enable_sanitizers: "OFF"
