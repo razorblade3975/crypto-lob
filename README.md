@@ -257,7 +257,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 For questions and support:
 - Create an [Issue](https://github.com/razorblade3975/crypto-lob/issues)
 - Check the [Documentation](./CLAUDE.md)
-- Review [Architecture Overview](./Crypto%20Market%20Data%20Provider_.md)
+- Review [Architecture Overview](./docs/Crypto%20Market%20Data%20Provider_.md)
 
 ---
 

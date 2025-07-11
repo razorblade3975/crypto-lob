@@ -130,7 +130,7 @@ if(BUILD_TESTS)
     # Configure TSAN suppression file if ThreadSanitizer is enabled
     if(ENABLE_SANITIZERS STREQUAL "TSAN")
         set_tests_properties(crypto-lob-tests PROPERTIES
-            ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tsan.suppressions"
+            ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/config/tsan.suppressions"
         )
     endif()
 endif()
