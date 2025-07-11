@@ -12,6 +12,7 @@ CLEAN=false
 JOBS=$(nproc 2>/dev/null || echo "4")
 VERBOSE=false
 HELP=false
+RUN_TESTS=false
 
 # Color output
 RED='\033[0;31m'
@@ -32,6 +33,7 @@ OPTIONS:
     -c, --clean             Clean build directory before building
     -j, --jobs N            Number of parallel jobs (default: $(nproc 2>/dev/null || echo "4"))
     -v, --verbose           Verbose output
+    -r, --run-tests         Run unit tests after building
     -h, --help              Show this help message
 
 EXAMPLES:
@@ -40,6 +42,8 @@ EXAMPLES:
     $0 -t Debug -s ASAN            # Debug build with AddressSanitizer
     $0 -t Debug -s TSAN -c         # Debug build with ThreadSanitizer, clean first
     $0 -s ASAN -j 8 -v             # ASAN build with 8 jobs, verbose
+    $0 -r                          # Release build and run tests
+    $0 -t Debug -s ASAN -r         # Debug ASAN build and run tests
 
 NOTES:
     - ASAN and TSAN cannot be used together
@@ -86,6 +90,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -v|--verbose)
             VERBOSE=true
+            shift
+            ;;
+        -r|--run-tests)
+            RUN_TESTS=true
             shift
             ;;
         -h|--help)
@@ -150,6 +158,7 @@ log_info "  Sanitizer:  $SANITIZER"
 log_info "  Jobs:       $JOBS"
 log_info "  Clean:      $CLEAN"
 log_info "  Verbose:    $VERBOSE"
+log_info "  Run Tests:  $RUN_TESTS"
 
 # Clean if requested or switching sanitizers
 if [[ "$CLEAN" == true ]]; then
@@ -208,4 +217,50 @@ find . -maxdepth 1 -type f -executable -name "crypto-lob*" | sed 's/^/  /'
 log_info "To run tests: ctest -V"
 if [[ "$SANITIZER" != "OFF" ]]; then
     log_info "Sanitizer is enabled. Check for any reported issues in test output."
+fi
+
+# Run tests if requested
+if [[ "$RUN_TESTS" == true ]]; then
+    log_info "Running unit tests..."
+    
+    # Run the main unit test executable directly, excluding benchmarks
+    # The project has crypto-lob-tests for unit tests and separate benchmark executables
+    if [[ -f "./crypto-lob-tests" ]]; then
+        TEST_CMD="./crypto-lob-tests"
+        
+        if [[ "$VERBOSE" == true ]]; then
+            # Show all test output with timing
+            TEST_CMD="$TEST_CMD --gtest_print_time=1"
+        else
+            # Show test progress with dots
+            TEST_CMD="$TEST_CMD --gtest_brief=0"
+        fi
+        
+        log_info "Running: $TEST_CMD"
+        
+        if eval "$TEST_CMD"; then
+            log_success "All unit tests passed!"
+        else
+            log_error "Some unit tests failed. Check output above for details."
+            log_info "To see detailed output, run with -v flag"
+            exit 1
+        fi
+    else
+        # Fallback to ctest if crypto-lob-tests doesn't exist
+        log_warning "crypto-lob-tests executable not found, using ctest"
+        CTEST_CMD="ctest -E benchmark"
+        
+        if [[ "$VERBOSE" == true ]]; then
+            CTEST_CMD="$CTEST_CMD -V"
+        else
+            CTEST_CMD="$CTEST_CMD --output-on-failure"
+        fi
+        
+        if eval "$CTEST_CMD"; then
+            log_success "All unit tests passed!"
+        else
+            log_error "Some unit tests failed. Check output above for details."
+            exit 1
+        fi
+    fi
 fi
