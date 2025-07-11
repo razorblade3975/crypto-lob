@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>  // for std::size_t
 #include <cstdint>
 #include <format>
+#include <functional>  // for std::hash
 #include <string>
 
 namespace crypto_lob::core {
@@ -37,8 +39,8 @@ struct InstrumentId {
 
 // Hash function for InstrumentId to use in unordered containers
 struct InstrumentIdHash {
-    std::size_t operator()(const InstrumentId& id) const noexcept {
-        return std::hash<std::string>{}(id.symbol) ^ (static_cast<std::size_t>(id.exchange) << 1);
+    std::size_t operator()(const InstrumentId& inst_id) const noexcept {
+        return std::hash<std::string>{}(inst_id.symbol) ^ (static_cast<std::size_t>(inst_id.exchange) << 1);
     }
 };
 
@@ -47,7 +49,7 @@ struct InstrumentIdHash {
 // Formatter for Side enum
 template <>
 struct std::formatter<crypto_lob::core::Side> {
-    constexpr auto parse(std::format_parse_context& ctx) {
+    static constexpr auto parse(std::format_parse_context& ctx) {
         return ctx.begin();
     }
 

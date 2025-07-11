@@ -1,10 +1,10 @@
 #pragma once
 
-#include <algorithm>
 #include <compare>
-#include <concepts>
+#include <cstddef>  // for std::size_t
 #include <cstdint>
 #include <format>
+#include <functional>  // for std::hash
 #include <limits>
 #include <string>
 #include <string_view>
@@ -29,7 +29,7 @@ class Price {
         if (value == 0)
             return "0";
 
-        bool negative = value < 0;
+        const bool negative = value < 0;
         if (negative)
             value = -value;
 
@@ -84,9 +84,9 @@ class Price {
         if (has_decimal && decimal_pos + 1 < str.length()) {
             std::string_view fractional_str = str.substr(decimal_pos + 1);
 
-            for (char c : fractional_str) {
-                if (c >= '0' && c <= '9' && decimal_places < 9) {  // Limit to 9 decimal places
-                    fractional_part = fractional_part * 10 + (c - '0');
+            for (char ch : fractional_str) {
+                if (ch >= '0' && ch <= '9' && decimal_places < 9) {  // Limit to 9 decimal places
+                    fractional_part = fractional_part * 10 + (ch - '0');
                     decimal_places++;
                 }
             }
@@ -126,11 +126,11 @@ class Price {
         if (value_ == 0)
             return "0";
 
-        bool negative = value_ < 0;
-        int64_t abs_value = negative ? -value_ : value_;
+        const bool negative = value_ < 0;
+        const int64_t abs_value = negative ? -value_ : value_;
 
-        int64_t integer_part = abs_value / SCALE;
-        int64_t fractional_part = abs_value % SCALE;
+        const int64_t integer_part = abs_value / SCALE;
+        const int64_t fractional_part = abs_value % SCALE;
 
         std::string result;
         if (negative)

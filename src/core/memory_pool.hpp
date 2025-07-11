@@ -1,26 +1,22 @@
 #pragma once
 
-#include <array>
+#include <algorithm>  // for std::min
 #include <atomic>
 #include <bit>
-#include <cassert>
 #include <chrono>
-#include <concepts>
 #include <cstddef>
+#include <cstdint>  // for uint64_t
 #include <cstdlib>
+#include <exception>  // for std::terminate
 #include <memory>
 #include <new>
-#include <stdexcept>
-#include <thread>
 #include <type_traits>
+#include <utility>  // for std::pair
 #include <vector>
 
-#include "cache.hpp"     // For CACHELINE_SIZE
-#include "platform.hpp"  // Platform requirements and detection
+#include "cache.hpp"  // For CACHELINE_SIZE, likely, unlikely
 
 // Linux-specific headers for huge pages
-#include <unistd.h>
-
 #include <sys/mman.h>
 
 namespace crypto_lob::core {
@@ -46,14 +42,14 @@ struct CacheConfig {
     bool prefault_pages = true;                       // Pre-fault huge pages to avoid runtime page faults
     size_t max_prefault_mb = 256;                     // Maximum memory to prefault (MB)
 
-    static constexpr size_t MAX_CACHE_SIZE = 512;
-    static constexpr size_t MAX_BATCH_SIZE = 256;
+    static constexpr size_t kMaxCacheSize = 512;
+    static constexpr size_t kMaxBatchSize = 256;
 
     CacheConfig() = default;
 
     CacheConfig(size_t cache_sz, size_t batch_sz, bool huge_pages = true, bool prefault = true)
-        : cache_size(std::min(cache_sz, MAX_CACHE_SIZE)),
-          batch_size(std::min(batch_sz, MAX_BATCH_SIZE)),
+        : cache_size(std::min(cache_sz, kMaxCacheSize)),
+          batch_size(std::min(batch_sz, kMaxBatchSize)),
           use_huge_pages(huge_pages),
           prefault_pages(prefault) {
         // Ensure batch_size <= cache_size
@@ -65,15 +61,16 @@ struct CacheConfig {
 
 // Utility function to round up to next power of two
 constexpr size_t round_up_to_power_of_two(size_t value) noexcept {
-    if (value == 0)
+    if (value == 0) {
         return 1;
+    }
     return size_t{1} << (64 - std::countl_zero(value - 1));
 }
 
 // Round up to nearest multiple of alignment with safety checks
 constexpr std::size_t round_up_to_alignment(std::size_t size, std::size_t alignment) noexcept {
     // Fix #4: Turn runtime assert into hard check that works in release builds
-    if (!alignment || !std::has_single_bit(alignment)) {
+    if (alignment == 0 || !std::has_single_bit(alignment)) {
         std::terminate();  // Hard failure for invalid alignment
     }
     return ((size + alignment - 1) / alignment) * alignment;
@@ -85,8 +82,8 @@ struct AllocationResult {
     bool used_huge_pages;
     size_t actual_size;
 
-    AllocationResult(void* p = nullptr, bool huge = false, size_t sz = 0)
-        : ptr(p), used_huge_pages(huge), actual_size(sz) {}
+    explicit AllocationResult(void* ptr_arg = nullptr, bool huge = false, size_t size = 0)
+        : ptr(ptr_arg), used_huge_pages(huge), actual_size(size) {}
 };
 
 // Huge page allocator with pre-faulting support
@@ -115,7 +112,7 @@ class HugePageAllocator {
 
         for (size_t offset = 0; offset < prefault_size; offset += page_size) {
             // Read and write to force page allocation
-            volatile char temp = byte_ptr[offset];
+            const volatile char temp = byte_ptr[offset];
             byte_ptr[offset] = temp;
         }
 
@@ -139,7 +136,7 @@ class HugePageAllocator {
         size_t actual_size = size;
 
         if (use_huge_pages && size >= HUGE_PAGE_SIZE_2MB) [[likely]] {
-            size_t huge_page_size = round_up_to_huge_page(size);
+            const size_t huge_page_size = round_up_to_huge_page(size);
             actual_size = huge_page_size;
 
             // Try to allocate using huge pages on Linux
@@ -149,7 +146,7 @@ class HugePageAllocator {
             if (ptr != MAP_FAILED) [[likely]] {
                 used_huge_pages = true;
                 if (prefault) {
-                    size_t max_prefault_bytes = max_prefault_mb * 1024 * 1024;
+                    const size_t max_prefault_bytes = max_prefault_mb * 1024 * 1024;
                     prefault_memory(ptr, huge_page_size, max_prefault_bytes);
                 }
                 return AllocationResult(ptr, used_huge_pages, actual_size);
@@ -164,7 +161,7 @@ class HugePageAllocator {
                 used_huge_pages = true;
 
                 if (prefault) {
-                    size_t max_prefault_bytes = max_prefault_mb * 1024 * 1024;
+                    const size_t max_prefault_bytes = max_prefault_mb * 1024 * 1024;
                     prefault_memory(ptr, huge_page_size, max_prefault_bytes);
                 }
                 return AllocationResult(ptr, used_huge_pages, actual_size);
@@ -185,7 +182,7 @@ class HugePageAllocator {
 
         if (was_huge_pages) [[likely]] {
             if (size >= HUGE_PAGE_SIZE_2MB) {
-                size_t huge_page_size = round_up_to_huge_page(size);
+                const size_t huge_page_size = round_up_to_huge_page(size);
                 munmap(ptr, huge_page_size);
             } else {
                 // Should not happen, but handle gracefully
@@ -205,7 +202,7 @@ struct TaggedPointer128 {
         uint64_t tag;
 
         TaggedPtr() : ptr(nullptr), tag(0) {}
-        TaggedPtr(T* p, uint64_t t) : ptr(p), tag(t) {}
+        TaggedPtr(T* ptr_arg, uint64_t tag_arg) : ptr(ptr_arg), tag(tag_arg) {}
 
         bool operator==(const TaggedPtr& other) const noexcept {
             return ptr == other.ptr && tag == other.tag;
@@ -574,7 +571,7 @@ static ThreadLocalCache<T>& get_thread_cache(MemoryPool<T>* pool, const CacheCon
 template <Allocatable T>
 class MemoryPool {
   private:
-    struct alignas(std::hardware_destructive_interference_size) FreeNode {
+    struct alignas(CACHELINE_SIZE) FreeNode {
         TaggedPointer128<FreeNode> next;
 
         FreeNode() = default;
@@ -590,8 +587,7 @@ class MemoryPool {
     static constexpr std::size_t BLOCK_SIZE = std::max(sizeof(T), sizeof(FreeNode));
 
     // Ensure alignment is power of two
-    static constexpr std::size_t ALIGNMENT =
-        round_up_to_power_of_two(std::max(alignof(T), std::hardware_destructive_interference_size));
+    static constexpr std::size_t ALIGNMENT = round_up_to_power_of_two(std::max(alignof(T), CACHELINE_SIZE));
 
     // Memory storage - properly aligned
     std::byte* memory_;
@@ -605,10 +601,10 @@ class MemoryPool {
     std::atomic<bool> shutting_down_;
 
     // Free list head with ABA protection
-    alignas(std::hardware_destructive_interference_size) TaggedPointer128<FreeNode> free_head_;
+    alignas(CACHELINE_SIZE) TaggedPointer128<FreeNode> free_head_;
 
     // Statistics (for monitoring)
-    alignas(std::hardware_destructive_interference_size) std::atomic<std::size_t> allocated_count_;
+    alignas(CACHELINE_SIZE) std::atomic<std::size_t> allocated_count_;
 
     // Fix #1: Custom deleter that uses correct deallocation method
     struct MemoryDeleter {

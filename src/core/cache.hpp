@@ -4,7 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <new>  // For std::hardware_destructive_interference_size
+// Note: <new> would be for std::hardware_destructive_interference_size, but we use fixed 64
 
 namespace crypto_lob::core {
 
@@ -16,13 +16,13 @@ static constexpr std::size_t CACHELINE_SIZE = 64;
 
 // Struct wrapper for cache-aligned types (alignment only)
 template <typename T>
-struct CACHE_ALIGNED aligned_64 {
+struct CACHE_ALIGNED Aligned64 {
     T value;
 };
 
 // Struct wrapper for cache-aligned types with full 64-byte size
 template <typename T>
-struct CACHE_ALIGNED sized_64 {
+struct CACHE_ALIGNED Sized64 {
     T value;
     std::array<std::byte, CACHELINE_SIZE - sizeof(T)> padding{};
 
@@ -31,8 +31,8 @@ struct CACHE_ALIGNED sized_64 {
 
 // Cache-aligned padding struct for preventing false sharing
 template <std::size_t N>
-struct CACHE_ALIGNED cache_pad {
-    std::byte data[N];
+struct CACHE_ALIGNED CachePad {
+    std::array<std::byte, N> data{};
 };
 
 // Align size to cache line boundary using bit-math for hot path performance
@@ -48,6 +48,7 @@ struct CACHE_ALIGNED cache_pad {
 // Check if pointer is cache line aligned
 // Note: Cannot be constexpr because reinterpret_cast is not allowed in constant expressions
 [[nodiscard]] inline bool is_cacheline_aligned(const void* ptr) noexcept {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     return (reinterpret_cast<std::uintptr_t>(ptr) & (CACHELINE_SIZE - 1)) == 0;
 }
 
@@ -87,7 +88,7 @@ template <typename T1, typename T2>
                   "Types larger than cache line may cause padding wraparound");
 
     std::size_t total_size = sizeof(T1) + sizeof(T2);
-    std::size_t aligned_size = align_to_cacheline(total_size);
+    const std::size_t aligned_size = align_to_cacheline(total_size);
     return aligned_size - total_size;
 }
 

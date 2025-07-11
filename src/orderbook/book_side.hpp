@@ -61,28 +61,28 @@ class BookSide {
     BookSide& operator=(BookSide&&) = default;
 
     /// Apply an update to a price level
-    UpdateResult apply_update(Price px, std::uint64_t qty, std::uint32_t seq) {
+    UpdateResult apply_update(Price price, std::uint64_t qty, std::uint32_t seq) {
         UpdateResult result{0, false, false, false};  // Explicit initialization
 
-        auto it = index_.find(px);
+        auto it = index_.find(price);
         if (it == index_.end()) {
             // New price level
             if (qty == 0) {
                 return result;  // Nothing to do
             }
 
-            auto* node = pool_.construct(px, qty, seq);
+            auto* node = pool_.construct(price, qty, seq);
             auto insert_result = tree_.insert(*node);
             if (unlikely(!insert_result.second)) {
                 // Critical error - new price insertion must succeed
                 // Fail fast to prevent data corruption
                 std::abort();
             }
-            index_[px] = node;
+            index_[price] = node;
 
             result.delta_qty = static_cast<std::int64_t>(qty);
             result.is_new_level = true;
-            result.affects_top_n = affects_top_n(px);
+            result.affects_top_n = affects_top_n(price);
 
             // Update nth price if needed
             if (tree_.size() == top_n_depth_ || (tree_.size() > top_n_depth_ && result.affects_top_n)) {
@@ -96,7 +96,7 @@ class BookSide {
 
             if (qty == 0) {
                 // Remove level
-                bool was_in_top_n = affects_top_n(px);
+                bool was_in_top_n = affects_top_n(price);
 
                 tree_.erase(tree_.iterator_to(*node));
                 index_.erase(it);  // Use iterator erase to avoid extra lookup
@@ -117,7 +117,7 @@ class BookSide {
                 node->update_seq = seq;  // Wraps at 4B messages
 
                 result.delta_qty = static_cast<std::int64_t>(qty) - static_cast<std::int64_t>(old_qty);
-                result.affects_top_n = affects_top_n(px);
+                result.affects_top_n = affects_top_n(price);
             }
         }
 
@@ -156,16 +156,16 @@ class BookSide {
     }
 
     /// Check if a price would be in the top N levels
-    [[nodiscard]] bool affects_top_n(Price px) const noexcept {
+    [[nodiscard]] bool affects_top_n(Price price) const noexcept {
         if (tree_.size() < top_n_depth_)
             return true;
 
         // For asks: price <= nth_price
         // For bids: price >= nth_price
         if constexpr (std::is_same_v<Comparator, AskComparator>) {
-            return px <= nth_price_;
+            return price <= nth_price_;
         } else {
-            return px >= nth_price_;
+            return price >= nth_price_;
         }
     }
 
@@ -218,8 +218,8 @@ class BookSide {
     }
 
     /// Find a price level by price
-    [[nodiscard]] const Node* find(Price px) const noexcept {
-        auto it = index_.find(px);
+    [[nodiscard]] const Node* find(Price price) const noexcept {
+        auto it = index_.find(price);
         return it != index_.end() ? it->second : nullptr;
     }
 

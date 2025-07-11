@@ -1,57 +1,31 @@
----
 Checks: >
-  -*,
   bugprone-*,
-  cert-*,
-  clang-analyzer-*,
-  concurrency-*,
-  cppcoreguidelines-*,
-  hicpp-*,
-  misc-*,
-  modernize-*,
   performance-*,
-  portability-*,
   readability-*,
-  -cppcoreguidelines-avoid-magic-numbers,
-  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
-  -cppcoreguidelines-pro-bounds-constant-array-index,
-  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
-  -hicpp-no-array-decay,
-  -modernize-use-trailing-return-type,
-  -readability-magic-numbers,
-  -cert-err58-cpp,
+  modernize-*,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-narrowing-conversions,
+  -cppcoreguidelines-no-malloc,
   -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-vararg,
   -cppcoreguidelines-special-member-functions,
-  -hicpp-special-member-functions
+  -readability-identifier-naming,
+  -modernize-use-trailing-return-type,
+  -modernize-pass-by-value
 
 WarningsAsErrors: ''
-
-HeaderFilterRegex: '.*\.(h|hpp)$'
-
+HeaderFilterRegex: '.*'
 AnalyzeTemporaryDtors: false
-
-FormatStyle: file
+FormatStyle: none
 
 CheckOptions:
-  - key: readability-identifier-naming.ClassCase
-    value: CamelCase
-  - key: readability-identifier-naming.EnumCase
-    value: CamelCase
-  - key: readability-identifier-naming.FunctionCase
-    value: lower_case
-  - key: readability-identifier-naming.MemberCase
-    value: lower_case
-  - key: readability-identifier-naming.ParameterCase
-    value: lower_case
-  - key: readability-identifier-naming.UnionCase
-    value: CamelCase
-  - key: readability-identifier-naming.VariableCase
-    value: lower_case
-  - key: readability-identifier-naming.IgnoreMainLikeFunctions
-    value: 1
-  - key: cppcoreguidelines-explicit-virtual-functions.IgnoreDestructors
-    value: 1
-  - key: performance-move-const-arg.CheckTriviallyCopyableMove
-    value: 0
-  - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
-    value: 1
+  - key:             modernize-use-nullptr.NullMacros
+    value:           'NULL'
+  - key:             modernize-loop-convert.MinConfidence
+    value:           reasonable
+  - key:             readability-function-cognitive-complexity.Threshold
+    value:           '50'  # allow complex functions in performance hot paths

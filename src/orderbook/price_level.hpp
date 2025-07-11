@@ -22,8 +22,8 @@ struct alignas(64) PriceLevelNode
 
     // Intrusive RB-tree hooks (24 bytes) inherited from base - cold data
 
-    PriceLevelNode(Price p, std::uint64_t q, std::uint32_t seq) noexcept
-        : price(p), quantity(q), update_seq(seq), subtree_size(1) {}
+    PriceLevelNode(Price price_arg, std::uint64_t qty, std::uint32_t seq) noexcept
+        : price(price_arg), quantity(qty), update_seq(seq), subtree_size(1) {}
 
     PriceLevelNode() noexcept : price(Price::zero()), quantity(0), update_seq(0), subtree_size(1) {}
 };
@@ -37,21 +37,21 @@ struct AskComparator {
     // Enable heterogeneous lookup to avoid node construction
     using is_transparent = void;
 
-    bool operator()(const Price& a, const Price& b) const noexcept {
-        return a < b;
+    bool operator()(const Price& lhs, const Price& rhs) const noexcept {
+        return lhs < rhs;
     }
 
-    bool operator()(const PriceLevelNode& a, const PriceLevelNode& b) const noexcept {
-        return a.price < b.price;
+    bool operator()(const PriceLevelNode& lhs, const PriceLevelNode& rhs) const noexcept {
+        return lhs.price < rhs.price;
     }
 
     // Mixed comparisons for efficient key-based searches
-    bool operator()(const Price& a, const PriceLevelNode& b) const noexcept {
-        return a < b.price;
+    bool operator()(const Price& lhs, const PriceLevelNode& rhs) const noexcept {
+        return lhs < rhs.price;
     }
 
-    bool operator()(const PriceLevelNode& a, const Price& b) const noexcept {
-        return a.price < b;
+    bool operator()(const PriceLevelNode& lhs, const Price& rhs) const noexcept {
+        return lhs.price < rhs;
     }
 };
 
@@ -60,21 +60,21 @@ struct BidComparator {
     // Enable heterogeneous lookup to avoid node construction
     using is_transparent = void;
 
-    bool operator()(const Price& a, const Price& b) const noexcept {
-        return a > b;
+    bool operator()(const Price& lhs, const Price& rhs) const noexcept {
+        return lhs > rhs;
     }
 
-    bool operator()(const PriceLevelNode& a, const PriceLevelNode& b) const noexcept {
-        return a.price > b.price;
+    bool operator()(const PriceLevelNode& lhs, const PriceLevelNode& rhs) const noexcept {
+        return lhs.price > rhs.price;
     }
 
     // Mixed comparisons for efficient key-based searches
-    bool operator()(const Price& a, const PriceLevelNode& b) const noexcept {
-        return a > b.price;
+    bool operator()(const Price& lhs, const PriceLevelNode& rhs) const noexcept {
+        return lhs > rhs.price;
     }
 
-    bool operator()(const PriceLevelNode& a, const Price& b) const noexcept {
-        return a.price > b;
+    bool operator()(const PriceLevelNode& lhs, const Price& rhs) const noexcept {
+        return lhs.price > rhs;
     }
 };
 
