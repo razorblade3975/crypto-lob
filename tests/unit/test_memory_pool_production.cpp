@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <barrier>
 #include <chrono>
@@ -487,6 +489,310 @@ TEST_P(ParameterizedMemoryPoolTest, TSanSafeFreelistStress) {
     for (auto& thread : threads) {
         thread.join();
     }
+
+    EXPECT_EQ(pool.allocated_objects(), 0);
+}
+
+// Additional test: ABA Protection Stress Test
+TEST_P(ParameterizedMemoryPoolTest, ABAProtectionStress) {
+    auto params = GetParam();
+    MemoryPool<MediumObject> pool(params.capacity, PoolDepletionPolicy::THROW_EXCEPTION, config_);
+
+    // Skip test for very small pools
+    if (params.capacity < 100) {
+        GTEST_SKIP() << "Pool too small for meaningful ABA stress test";
+    }
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> allocations{0};
+    std::atomic<uint64_t> deallocations{0};
+    std::atomic<uint64_t> address_reuses{0};
+
+    // Track recently seen addresses
+    static constexpr size_t HISTORY_SIZE = 1000;
+    struct AddressHistory {
+        std::array<void*, HISTORY_SIZE> addresses{};
+        std::atomic<size_t> index{0};
+
+        bool seen_recently(void* addr) const {
+            size_t current = index.load(std::memory_order_relaxed);
+            for (size_t i = 0; i < std::min(current, HISTORY_SIZE); ++i) {
+                if (addresses[i] == addr)
+                    return true;
+            }
+            return false;
+        }
+
+        void add(void* addr) {
+            size_t idx = index.fetch_add(1, std::memory_order_relaxed) % HISTORY_SIZE;
+            addresses[idx] = addr;
+        }
+    };
+
+    alignas(64) AddressHistory history;
+
+    // Thread 1: Rapid allocate/free pattern
+    std::thread aba_thread1([&]() {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> hold_dist(0, 3);
+
+        while (!stop.load(std::memory_order_acquire)) {
+            // Allocate a few objects
+            std::vector<MediumObject*> batch;
+            for (int i = 0; i < 5; ++i) {
+                try {
+                    auto* obj = pool.allocate();
+                    if (obj) {
+                        batch.push_back(obj);
+                        allocations.fetch_add(1, std::memory_order_relaxed);
+
+                        // Check if we've seen this address recently
+                        if (history.seen_recently(obj)) {
+                            address_reuses.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        history.add(obj);
+                    }
+                } catch (const std::bad_alloc&) {
+                    // Expected under stress
+                }
+            }
+
+            // Hold briefly or not at all
+            if (hold_dist(gen) == 0) {
+                std::this_thread::yield();
+            }
+
+            // Free in LIFO order (most likely to cause ABA)
+            while (!batch.empty()) {
+                pool.deallocate(batch.back());
+                deallocations.fetch_add(1, std::memory_order_relaxed);
+                batch.pop_back();
+            }
+        }
+    });
+
+    // Thread 2: Different pattern - allocate, use, free
+    std::thread aba_thread2([&]() {
+        while (!stop.load(std::memory_order_acquire)) {
+            try {
+                auto* obj1 = pool.allocate();
+                auto* obj2 = pool.allocate();
+
+                if (obj1 && obj2) {
+                    allocations.fetch_add(2, std::memory_order_relaxed);
+
+                    // Simulate some work
+                    obj1->data[0] = 42;
+                    obj2->data[0] = 84;
+
+                    // Free in different order
+                    pool.deallocate(obj2);
+                    pool.deallocate(obj1);
+                    deallocations.fetch_add(2, std::memory_order_relaxed);
+                } else {
+                    if (obj1)
+                        pool.deallocate(obj1);
+                    if (obj2)
+                        pool.deallocate(obj2);
+                }
+            } catch (const std::bad_alloc&) {
+                // Expected under stress
+            }
+
+            std::this_thread::yield();
+        }
+    });
+
+    // Thread 3: Burst allocations
+    std::thread aba_thread3([&]() {
+        while (!stop.load(std::memory_order_acquire)) {
+            std::vector<MediumObject*> burst;
+
+            // Try to allocate many at once
+            for (int i = 0; i < 20; ++i) {
+                try {
+                    auto* obj = pool.allocate();
+                    if (obj) {
+                        burst.push_back(obj);
+                        allocations.fetch_add(1, std::memory_order_relaxed);
+                    }
+                } catch (const std::bad_alloc&) {
+                    break;
+                }
+            }
+
+            // Free all at once
+            for (auto* obj : burst) {
+                pool.deallocate(obj);
+                deallocations.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+    });
+
+    // Let threads run for a while
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    stop.store(true, std::memory_order_release);
+    aba_thread1.join();
+    aba_thread2.join();
+    aba_thread3.join();
+
+    // Verify no corruption
+    EXPECT_EQ(pool.allocated_objects(), 0);
+    EXPECT_EQ(allocations.load(), deallocations.load());
+
+    // Check address reuse rate
+    uint64_t total_allocs = allocations.load();
+    uint64_t reuses = address_reuses.load();
+    double reuse_rate = total_allocs > 0 ? static_cast<double>(reuses) / total_allocs : 0.0;
+
+    // Address reuse is expected in a memory pool, but should be safe with ABA protection
+    // The test verifies that high reuse doesn't cause corruption
+    // For smaller pools, reuse rate will naturally be higher
+    if (params.capacity >= 1000) {
+        // Just log the reuse rate for information
+        if (reuse_rate > 0.7) {
+            std::cerr << "Note: Address reuse rate is " << reuse_rate << " for pool capacity " << params.capacity
+                      << std::endl;
+        }
+    }
+
+    // Final validation - allocate and free entire pool
+    std::vector<MediumObject*> final_check;
+    for (size_t i = 0; i < params.capacity; ++i) {
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "Pool corruption detected at index " << i;
+        final_check.push_back(obj);
+    }
+
+    EXPECT_THROW(pool.allocate(), std::bad_alloc);
+
+    for (auto* obj : final_check) {
+        pool.deallocate(obj);
+    }
+}
+
+// Additional test: Exhaustion Recovery Pattern
+TEST_P(ParameterizedMemoryPoolTest, ExhaustionRecoveryPattern) {
+    auto params = GetParam();
+    MemoryPool<MediumObject> pool(params.capacity, PoolDepletionPolicy::THROW_EXCEPTION, config_);
+
+    // Skip test for very small pools that can't demonstrate all patterns
+    if (params.capacity < 4) {
+        GTEST_SKIP() << "Pool too small for exhaustion recovery patterns";
+    }
+
+    // Test various allocation/deallocation patterns after exhaustion
+    std::vector<MediumObject*> objects;
+    objects.reserve(params.capacity);
+
+    // Phase 1: Exhaust the pool
+    for (size_t i = 0; i < params.capacity; ++i) {
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "Failed to allocate object " << i;
+        objects.push_back(obj);
+    }
+
+    // Verify pool is exhausted
+    EXPECT_TRUE(pool.full());
+    EXPECT_THROW(pool.allocate(), std::bad_alloc);
+
+    // Phase 2: Free in different patterns and verify recovery
+
+    // Pattern A: Free every other object (fragmented pattern)
+    for (size_t i = 0; i < objects.size(); i += 2) {
+        pool.deallocate(objects[i]);
+        objects[i] = nullptr;
+    }
+
+    // Should be able to allocate half capacity
+    size_t freed_count = params.capacity / 2;
+    for (size_t i = 0; i < freed_count; ++i) {
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "Failed to allocate after freeing " << i;
+        // Store in the nullptr slots
+        for (size_t j = 0; j < objects.size(); j += 2) {
+            if (objects[j] == nullptr) {
+                objects[j] = obj;
+                break;
+            }
+        }
+    }
+
+    // Should be exhausted again
+    EXPECT_THROW(pool.allocate(), std::bad_alloc);
+
+    // Pattern B: Free in reverse order (LIFO)
+    std::vector<MediumObject*> temp_objects;
+    for (auto* obj : objects) {
+        if (obj != nullptr) {
+            temp_objects.push_back(obj);
+        }
+    }
+
+    // Free last 25% in reverse order
+    size_t reverse_free_count = temp_objects.size() / 4;
+    for (size_t i = 0; i < reverse_free_count; ++i) {
+        pool.deallocate(temp_objects[temp_objects.size() - 1 - i]);
+    }
+
+    // Allocate them back
+    for (size_t i = 0; i < reverse_free_count; ++i) {
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "Failed to allocate in LIFO pattern " << i;
+        temp_objects[temp_objects.size() - reverse_free_count + i] = obj;
+    }
+
+    // Pattern C: Random shuffle deallocation
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(temp_objects.begin(), temp_objects.end(), g);
+
+    // Free first 50%
+    size_t shuffle_free_count = temp_objects.size() / 2;
+    for (size_t i = 0; i < shuffle_free_count; ++i) {
+        pool.deallocate(temp_objects[i]);
+    }
+
+    // Allocate them back
+    for (size_t i = 0; i < shuffle_free_count; ++i) {
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "Failed to allocate after shuffle " << i;
+        temp_objects[i] = obj;
+    }
+
+    // Phase 3: Complete cleanup and verify full recovery
+    for (auto* obj : temp_objects) {
+        pool.deallocate(obj);
+    }
+
+    // Flush thread cache to ensure all objects are returned
+    pool.flush_thread_cache();
+
+    EXPECT_TRUE(pool.empty());
+    EXPECT_EQ(pool.allocated_objects(), 0);
+
+    // Phase 4: Verify can allocate full capacity again
+    objects.clear();
+    for (size_t i = 0; i < params.capacity; ++i) {
+        auto* obj = pool.allocate();
+        ASSERT_NE(obj, nullptr) << "Failed to allocate full capacity after recovery " << i;
+        objects.push_back(obj);
+    }
+
+    EXPECT_TRUE(pool.full());
+    EXPECT_THROW(pool.allocate(), std::bad_alloc);
+
+    // Final cleanup
+    for (auto* obj : objects) {
+        pool.deallocate(obj);
+    }
+
+    // Flush thread cache to ensure accurate count
+    pool.flush_thread_cache();
 
     EXPECT_EQ(pool.allocated_objects(), 0);
 }

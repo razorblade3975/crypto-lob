@@ -370,6 +370,222 @@ TEST_F(BookSideTest, IteratorStability) {
     EXPECT_EQ(middle_node->quantity, 250);
 }
 
+// Additional test: Price overflow/underflow edge cases
+TEST_F(BookSideTest, PriceOverflowUnderflow) {
+    // Test near int64_t limits - Price uses int64_t internally
+    // Max safe value considering Price internal scale of 10^9
+    const int64_t max_safe_raw = std::numeric_limits<int64_t>::max() / 2;
+    const int64_t min_safe_raw = std::numeric_limits<int64_t>::min() / 2;
+
+    Price max_price(max_safe_raw);
+    Price min_price(min_safe_raw);
+
+    // Test ask side with extreme prices
+    auto result1 = ask_side_->apply_update(max_price, 100, 1);
+    EXPECT_TRUE(result1.is_new_level);
+    EXPECT_EQ(result1.delta_qty, 100);
+
+    // Add a normal price
+    auto result2 = ask_side_->apply_update(Price(100.0), 200, 2);
+    EXPECT_TRUE(result2.is_new_level);
+
+    // Verify ordering is maintained
+    EXPECT_EQ(ask_side_->size(), 2);
+    EXPECT_EQ(ask_side_->best()->price, Price(100.0));  // Lower price is best for asks
+
+    // Test bid side with extreme prices
+    auto result3 = bid_side_->apply_update(min_price, 300, 1);
+    EXPECT_TRUE(result3.is_new_level);
+    EXPECT_EQ(result3.delta_qty, 300);
+
+    auto result4 = bid_side_->apply_update(Price(100.0), 400, 2);
+    EXPECT_TRUE(result4.is_new_level);
+
+    // Verify ordering is maintained
+    EXPECT_EQ(bid_side_->size(), 2);
+    EXPECT_EQ(bid_side_->best()->price, Price(100.0));  // Higher price is best for bids
+
+    // Test price arithmetic near limits
+    Price near_max(static_cast<int64_t>(max_safe_raw - 1000000000LL));  // Leave room for Price's scale
+    auto result5 = ask_side_->apply_update(near_max, 500, 3);
+    EXPECT_TRUE(result5.is_new_level);
+
+    // Verify tree consistency with extreme values
+    EXPECT_TRUE(ask_side_->validate_tree());
+    EXPECT_TRUE(bid_side_->validate_tree());
+}
+
+// Additional test: Sequence number wraparound
+TEST_F(BookSideTest, SequenceNumberWraparound) {
+    // Test behavior at 32-bit sequence wraparound
+    uint32_t near_max = std::numeric_limits<uint32_t>::max() - 10;
+
+    // Add initial level
+    ask_side_->apply_update(Price(100.0), 100, near_max);
+
+    // Verify initial state
+    auto* node = ask_side_->find(Price(100.0));
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->update_seq, near_max);
+
+    // Update several times approaching wraparound
+    for (uint32_t i = 1; i <= 10; ++i) {
+        uint32_t seq = near_max + i;
+        ask_side_->apply_update(Price(100.0), 100 + i, seq);
+
+        // Verify update was applied
+        node = ask_side_->find(Price(100.0));
+        ASSERT_NE(node, nullptr);
+        EXPECT_EQ(node->quantity, static_cast<uint64_t>(100 + i));
+        EXPECT_EQ(node->update_seq, seq);
+    }
+
+    // Continue past wraparound point
+    for (uint32_t i = 0; i < 10; ++i) {
+        ask_side_->apply_update(Price(100.0), 200 + i, i);
+
+        node = ask_side_->find(Price(100.0));
+        ASSERT_NE(node, nullptr);
+        EXPECT_EQ(node->quantity, static_cast<uint64_t>(200 + i));
+        EXPECT_EQ(node->update_seq, i);  // Wrapped around
+    }
+
+    // Test with multiple price levels during wraparound
+    ask_side_->clear();
+
+    // Add levels with sequences near max
+    for (int i = 0; i < 5; ++i) {
+        ask_side_->apply_update(Price(100.0 + i * 0.1), 1000 + i, near_max - i);
+    }
+
+    // Update all levels past wraparound
+    for (int i = 0; i < 5; ++i) {
+        uint32_t wrapped_seq = i;  // Sequences 0-4 after wraparound
+        ask_side_->apply_update(Price(100.0 + i * 0.1), 2000 + i, wrapped_seq);
+
+        auto* level = ask_side_->find(Price(100.0 + i * 0.1));
+        ASSERT_NE(level, nullptr);
+        EXPECT_EQ(level->update_seq, wrapped_seq);
+    }
+
+    // Verify book remains consistent after wraparound
+    EXPECT_TRUE(ask_side_->validate_tree());
+    EXPECT_EQ(ask_side_->size(), 5);
+}
+
+// Additional test: Cache locality pattern
+TEST_F(BookSideTest, CacheLocalityPattern) {
+// Skip if running under sanitizers which affect timing
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    GTEST_SKIP() << "Skipping performance test under sanitizers";
+#endif
+#endif
+
+    // Verify that frequently accessed nodes maintain cache locality
+    const size_t NUM_LEVELS = 1000;
+
+    // Create price levels
+    for (size_t i = 0; i < NUM_LEVELS; ++i) {
+        ask_side_->apply_update(Price(100.0 + i * 0.01), 100 + i, i);
+    }
+
+    // Warm up caches
+    for (int warmup = 0; warmup < 100; ++warmup) {
+        volatile auto* node = ask_side_->kth_level(warmup % 10);
+        (void)node;
+    }
+
+    // Measure access patterns
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // Simulate realistic access pattern - top levels accessed more
+    std::mt19937 rng(42);  // Deterministic seed
+    std::uniform_int_distribution<> top_dist(0, 99);
+    std::uniform_int_distribution<> all_dist(0, NUM_LEVELS - 1);
+
+    const int NUM_ACCESSES = 10000;
+    int top_accesses = 0;
+
+    for (int iteration = 0; iteration < NUM_ACCESSES; ++iteration) {
+        // 80% of accesses to top 10% of levels
+        size_t level;
+        if (top_dist(rng) < 80) {
+            level = all_dist(rng) % (NUM_LEVELS / 10);
+            top_accesses++;
+        } else {
+            level = all_dist(rng);
+        }
+
+        auto* node = ask_side_->kth_level(level);
+        if (node) {
+            // Force actual memory access
+            volatile auto price = node->price.raw_value();
+            volatile auto qty = node->quantity;
+            (void)price;
+            (void)qty;
+        }
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+
+    // Verify access pattern was as expected
+    double top_ratio = static_cast<double>(top_accesses) / NUM_ACCESSES;
+    EXPECT_GT(top_ratio, 0.75);  // Should be around 0.8
+    EXPECT_LT(top_ratio, 0.85);
+
+    // Performance expectation: should complete quickly due to cache hits
+    // This is a soft expectation - may vary by hardware
+    if (duration.count() > 10000) {  // 10ms for 10k accesses
+        std::cerr << "Warning: Cache locality test took " << duration.count() << " microseconds (expected < 10000)"
+                  << std::endl;
+    }
+
+    // Additional test: sequential vs random access comparison
+    const int SEQUENTIAL_ACCESSES = 1000;
+
+    // Sequential access (cache-friendly)
+    auto seq_start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < SEQUENTIAL_ACCESSES; ++i) {
+        for (size_t j = 0; j < 10; ++j) {
+            auto* node = ask_side_->kth_level(j);
+            if (node) {
+                volatile auto price = node->price.raw_value();
+                (void)price;
+            }
+        }
+    }
+    auto seq_end = std::chrono::high_resolution_clock::now();
+    auto seq_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(seq_end - seq_start);
+
+    // Random access (cache-unfriendly)
+    auto rand_start = std::chrono::high_resolution_clock::now();
+    std::uniform_int_distribution<> rand_level_dist(0, NUM_LEVELS - 1);
+    for (int i = 0; i < SEQUENTIAL_ACCESSES; ++i) {
+        for (size_t j = 0; j < 10; ++j) {
+            auto* node = ask_side_->kth_level(rand_level_dist(rng));
+            if (node) {
+                volatile auto price = node->price.raw_value();
+                (void)price;
+            }
+        }
+    }
+    auto rand_end = std::chrono::high_resolution_clock::now();
+    auto rand_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(rand_end - rand_start);
+
+    // Sequential access should be faster than random (better cache usage)
+    // Only check if both durations are meaningful (> 0)
+    if (seq_duration.count() > 0 && rand_duration.count() > 0) {
+        double speedup = static_cast<double>(rand_duration.count()) / seq_duration.count();
+        // Sequential should be at least somewhat faster
+        if (speedup < 1.1) {
+            std::cerr << "Warning: Sequential access not significantly faster than random "
+                      << "(speedup: " << speedup << "x)" << std::endl;
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

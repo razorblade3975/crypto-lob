@@ -11,7 +11,7 @@ list(APPEND CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})
 
 # Build options
 option(BUILD_TESTS "Build tests" ON)
-option(BUILD_BENCHMARKS "Build benchmarks" OFF)
+option(BUILD_BENCHMARKS "Build benchmarks" ON)
 set(ENABLE_SANITIZERS "OFF" CACHE STRING "Enable sanitizers: OFF, ASAN, TSAN")
 set_property(CACHE ENABLE_SANITIZERS PROPERTY STRINGS "OFF" "ASAN" "TSAN")
 
@@ -60,33 +60,23 @@ find_package(tomlplusplus REQUIRED)
 # Include directories
 include_directories(src)
 
-# Core library - commented out until source files exist
-# file(GLOB_RECURSE CORE_SOURCES 
-#     "src/core/*.cpp"
-#     "src/networking/*.cpp"
-#     "src/exchanges/*.cpp"
-#     "src/parsing/*.cpp"
-#     "src/orderbook/*.cpp"
-#     "src/ipc/*.cpp"
-#     "src/threading/*.cpp"
-# )
+# Core library - header-only for now
+add_library(crypto_lob_core INTERFACE)
 
-# add_library(crypto-lob-core STATIC ${CORE_SOURCES})
+target_link_libraries(crypto_lob_core 
+    INTERFACE
+        Boost::boost
+        Boost::system
+        Threads::Threads
+        simdjson::simdjson
+        tomlplusplus::tomlplusplus
+)
 
-# target_link_libraries(crypto-lob-core 
-#     PUBLIC
-#         Boost::boost
-#         Boost::system
-#         Threads::Threads
-#         simdjson::simdjson
-#         tomlplusplus::tomlplusplus
-# )
-
-# target_include_directories(crypto-lob-core
-#     PUBLIC
-#         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-#         $<INSTALL_INTERFACE:include>
-# )
+target_include_directories(crypto_lob_core
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+        $<INSTALL_INTERFACE:include>
+)
 
 # Main executable
 add_executable(crypto-lob src/main.cpp)
@@ -131,17 +121,14 @@ if(BUILD_TESTS)
     endif()
 endif()
 
-# Benchmarks - TODO
-# if(BUILD_BENCHMARKS)
-#     find_package(benchmark REQUIRED)
+# Benchmarks
+if(BUILD_BENCHMARKS)
+    find_package(benchmark REQUIRED)
+    find_package(jemalloc QUIET)  # Optional for extended benchmarks
     
-#     file(GLOB_RECURSE BENCH_SOURCES "tests/benchmarks/*.cpp")
-#     add_executable(crypto-lob-benchmarks ${BENCH_SOURCES})
-#     target_link_libraries(crypto-lob-benchmarks 
-#         crypto-lob-core
-#         benchmark::benchmark
-#     )
-# endif()
+    # Add benchmarks subdirectory
+    add_subdirectory(tests/benchmarks)
+endif()
 
 # Install targets
 install(TARGETS crypto-lob
