@@ -255,6 +255,7 @@ class ThreadLocalCacheBase {
     virtual ~ThreadLocalCacheBase() = default;
     virtual void flush_to_pool() = 0;
     virtual bool belongs_to_pool(void* pool) const = 0;
+    virtual void invalidate_pool() = 0;  // Safely invalidate pool pointer
 };
 
 // Thread-local head of the intrusive list
@@ -506,6 +507,11 @@ class ThreadLocalCache : public ThreadLocalCacheBase {
         return pool == global_pool_;
     }
 
+    // Override from base class - safely invalidate pool pointer
+    void invalidate_pool() override {
+        global_pool_ = nullptr;
+    }
+
     // Cache statistics
     [[nodiscard]] size_t size() const noexcept {
         return current_size_;
@@ -696,6 +702,14 @@ class MemoryPool {
 
         // Memory fence to ensure all threads see the shutdown flag
         std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        // CRITICAL: Invalidate all thread-local caches pointing to this pool
+        // This prevents use-after-free when thread-local destructors run later
+        for (ThreadLocalCacheBase* node = tls_cache_list_head; node; node = node->next_) {
+            if (node->belongs_to_pool(this)) {
+                node->invalidate_pool();
+            }
+        }
 
         // CRITICAL: Application must ensure all worker threads are joined before
         // destroying the pool. Thread-local caches in other threads may still

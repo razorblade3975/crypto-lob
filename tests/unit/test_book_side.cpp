@@ -156,7 +156,9 @@ TEST_F(BookSideTest, KthLevel) {
 TEST_F(BookSideTest, FuzzTest) {
     std::mt19937 rng(42);  // Deterministic seed
     // Test a range around $1000 with realistic price increments
-    std::uniform_real_distribution<double> price_dist(900.0, 1100.0);
+    // Use integer distribution to avoid floating-point precision issues
+    // Range: $900.000000000 to $1100.000000000 with 9 decimal places
+    std::uniform_int_distribution<int64_t> price_raw_dist(900'000'000'000LL, 1100'000'000'000LL);
     std::uniform_int_distribution<uint64_t> qty_dist(0, 10000);
     std::uniform_int_distribution<int> action_dist(0, 2);  // Add/update/remove
 
@@ -166,7 +168,8 @@ TEST_F(BookSideTest, FuzzTest) {
     const size_t NUM_OPS = 100'000;
 
     for (size_t i = 0; i < NUM_OPS; ++i) {
-        Price price = Price(price_dist(rng));
+        // Create price from raw integer value to avoid floating-point conversion
+        Price price(price_raw_dist(rng));
         uint64_t qty = action_dist(rng) == 0 ? 0 : qty_dist(rng);
 
         // Update expected state
@@ -220,14 +223,15 @@ TEST_F(BookSideTest, DISABLED_PerformanceBenchmark) {
 
     // Benchmark random updates
     std::mt19937 rng(42);
-    std::uniform_real_distribution<double> price_dist(90.0, 110.0);
+    // Use integer distribution for deterministic prices: $90.000000000 to $110.000000000
+    std::uniform_int_distribution<int64_t> price_raw_dist(90'000'000'000LL, 110'000'000'000LL);
     std::uniform_int_distribution<uint64_t> qty_dist(100, 10000);
 
     const size_t NUM_OPS = 1'000'000;
     auto start = std::chrono::high_resolution_clock::now();
 
     for (size_t i = 0; i < NUM_OPS; ++i) {
-        Price price = Price(price_dist(rng));
+        Price price(price_raw_dist(rng));
         uint64_t qty = qty_dist(rng);
         ask_side_->apply_update(price, qty, i);
     }
@@ -247,20 +251,20 @@ TEST_F(BookSideTest, DISABLED_PerformanceBenchmark) {
 
 TEST_F(BookSideTest, HashTreeCoherence) {
     std::mt19937 rng(42);
-    // Test with micro-cap token prices to ensure LOW_SCALE is tested
-    std::uniform_real_distribution<double> price_dist(0.00001, 0.001);
+    // Test with micro-cap token prices: $0.000010000 to $0.001000000 (9 decimal places)
+    std::uniform_int_distribution<int64_t> price_raw_dist(10'000LL, 1'000'000LL);
     std::uniform_int_distribution<uint64_t> qty_dist(0, 10000);
 
     // Run 1M operations (reduced from 10M for reasonable test time)
     for (size_t i = 0; i < 1'000'000; ++i) {
-        Price price = Price(price_dist(rng));
+        Price price(price_raw_dist(rng));
         uint64_t qty = qty_dist(rng);
         ask_side_->apply_update(price, qty, i);
     }
 
     // Pick 100 random prices and verify coherence
     for (int i = 0; i < 100; ++i) {
-        Price price = Price(price_dist(rng));
+        Price price(price_raw_dist(rng));
 
         auto* hash_result = ask_side_->find(price);
 
