@@ -80,12 +80,6 @@ inline void prefetch(const void* addr, PrefetchHint hint = PrefetchHint::READ_TE
     }
 }
 
-// Hardware-specific cache line size detection (runtime)
-// WARNING: This is for diagnostics only - do NOT use to size objects!
-// Static alignas(64) assumptions will break if this differs from CACHELINE_SIZE
-[[nodiscard]] inline std::size_t get_cacheline_size() noexcept {
-    return std::hardware_destructive_interference_size;
-}
 
 // Utility to calculate optimal padding between two members
 template <typename T1, typename T2>
