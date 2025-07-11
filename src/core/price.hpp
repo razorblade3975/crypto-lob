@@ -283,16 +283,6 @@ class Price {
         return Price(std::numeric_limits<value_type>::min(), HIGH_SCALE);
     }
 
-    // Create prices for different magnitude ranges
-    static constexpr Price from_satoshi(int64_t satoshis) noexcept {
-        // 1 satoshi = 0.00000001 BTC
-        return Price(satoshis, LOW_SCALE);
-    }
-
-    static constexpr Price from_wei(value_type wei) noexcept {
-        // 1 wei = 1e-18 ETH
-        return Price(wei, LOW_SCALE);
-    }
 };
 
 // Quantity type for price level quantities (same precision requirements as Price)

@@ -93,7 +93,6 @@ The system is architected as a single-process, multi-threaded application with s
 **Price Range Support:**
 - **High-value**: $1,000,000+ (Bitcoin) with 8 decimal places
 - **Micro-cap**: $0.000000001+ (meme coins) with 18 decimal places
-- **Specialized constructors**: from_satoshi(), from_wei() for blockchain units
 
 ### Cache Alignment Infrastructure (src/core/cache.hpp)
 
