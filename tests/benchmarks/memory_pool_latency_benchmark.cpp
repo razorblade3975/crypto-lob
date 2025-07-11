@@ -30,10 +30,10 @@ struct Order {
     uint64_t timestamp;
     uint8_t side;
     uint8_t order_type;
-    char padding[6];  // Align to 48 bytes
+    char padding[22];  // Align to 64 bytes (cache line size)
 };
 
-static_assert(sizeof(Order) == 48, "Order should be 48 bytes");
+static_assert(sizeof(Order) == 64, "Order should be 64 bytes (cache line size)");
 
 // Latency measurement utilities
 class LatencyRecorder {
