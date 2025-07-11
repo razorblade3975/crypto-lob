@@ -49,27 +49,13 @@ jobs:
       uses: actions/checkout@v4
     
     
-    - name: Cache Conan packages
-      uses: actions/cache@v4
-      with:
-        path: ~/.conan2
-        key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-${{ matrix.conan_build_type }}
-        restore-keys: |
-          conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-
-          conan-${{ runner.os }}-
-    
     - name: Build development container
       run: |
         docker compose build crypto-lob-dev
     
-    - name: Mount Conan cache and build
+    - name: Build and test
       run: |
-        # Create Conan cache directory on host if it doesn't exist
-        mkdir -p ~/.conan2
-        
-        docker compose run --rm \
-          -v ~/.conan2:/root/.conan2:cached \
-          crypto-lob-dev bash -c "
+        docker compose run --rm crypto-lob-dev bash -c "
           cd /workspace && \
           echo '📦 Installing Conan dependencies...' && \
           conan install . --output-folder=build --build=missing \
@@ -110,22 +96,10 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
-    - name: Cache Conan packages
-      uses: actions/cache@v4
-      with:
-        path: ~/.conan2
-        key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-Debug
-        restore-keys: |
-          conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml') }}-
-          conan-${{ runner.os }}-
 
     - name: Run clang-tidy
       run: |
-        mkdir -p ~/.conan2
-        docker compose run --rm \
-          -v ~/.conan2:/root/.conan2:cached \
-          crypto-lob-dev bash -c "
+        docker compose run --rm crypto-lob-dev bash -c "
           cd /workspace && \
           conan install . --output-folder=build_tidy --build=missing \
             -s compiler=clang -s compiler.version=17 \
