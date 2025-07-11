@@ -7,7 +7,16 @@
 namespace crypto_lob::core {
 
 // Exchange identifier
-enum class ExchangeId : uint8_t { BINANCE = 0, KUCOIN = 1, OKX = 2 };
+enum class ExchangeId : uint8_t { 
+    BINANCE_SPOT = 0, 
+    BINANCE_FUT = 1,
+    BYBIT_SPOT = 2,
+    BYBIT_FUT = 3,
+    KUCOIN_SPOT = 4,
+    KUCOIN_FUT = 5,
+    OKX_SPOT = 6,
+    OKX_SPOT = 7,
+};
 
 // Market side
 enum class Side : uint8_t { BUY = 0, SELL = 1 };
