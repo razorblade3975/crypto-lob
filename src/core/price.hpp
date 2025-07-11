@@ -282,7 +282,6 @@ class Price {
     static constexpr Price min() noexcept {
         return Price(std::numeric_limits<value_type>::min(), HIGH_SCALE);
     }
-
 };
 
 // Quantity type for price level quantities (same precision requirements as Price)
