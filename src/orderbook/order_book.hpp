@@ -15,13 +15,13 @@ namespace crypto_lob::core {
 
 /// Top of book snapshot with cached values
 struct alignas(64) TopOfBook {
-    Price bid_price{0};
-    Price ask_price{0};
+    Price bid_price{static_cast<int64_t>(0)};
+    Price ask_price{static_cast<int64_t>(0)};
     std::uint64_t bid_qty{0};
     std::uint64_t ask_qty{0};
 
     [[nodiscard]] constexpr bool valid() const noexcept {
-        return bid_price > 0 && ask_price > 0 && bid_price < ask_price;
+        return !bid_price.is_zero() && !ask_price.is_zero() && bid_price < ask_price;
     }
 
     [[nodiscard]] constexpr Price spread() const noexcept {
@@ -194,9 +194,9 @@ class alignas(CACHELINE_SIZE) OrderBook {
         const auto* best_bid = bids_.best();
         const auto* best_ask = asks_.best();
 
-        cached_tob_.bid_price = best_bid ? best_bid->price : Price{0};
+        cached_tob_.bid_price = best_bid ? best_bid->price : Price{static_cast<int64_t>(0)};
         cached_tob_.bid_qty = best_bid ? best_bid->quantity : 0;
-        cached_tob_.ask_price = best_ask ? best_ask->price : Price{0};
+        cached_tob_.ask_price = best_ask ? best_ask->price : Price{static_cast<int64_t>(0)};
         cached_tob_.ask_qty = best_ask ? best_ask->quantity : 0;
     }
 

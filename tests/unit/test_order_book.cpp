@@ -87,7 +87,7 @@ TEST_F(OrderBookTest, BasicUpdates_SingleBidUpdate) {
     OrderBook book(instrument, *pool_);
 
     // Add single bid
-    bool tob_changed = book.update(Side::BUY, Price{50000}, 100);
+    bool tob_changed = book.update(Side::BUY, Price(50000.0), 100);
     EXPECT_TRUE(tob_changed);
 
     EXPECT_FALSE(book.empty());
@@ -95,7 +95,7 @@ TEST_F(OrderBookTest, BasicUpdates_SingleBidUpdate) {
     EXPECT_EQ(book.ask_depth(), 0);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});
+    EXPECT_EQ(tob.bid_price, Price(50000.0));
     EXPECT_EQ(tob.bid_qty, 100);
     EXPECT_EQ(tob.ask_price.raw_value(), 0);
     EXPECT_EQ(tob.ask_qty, 0);
@@ -107,7 +107,7 @@ TEST_F(OrderBookTest, BasicUpdates_SingleAskUpdate) {
     OrderBook book(instrument, *pool_);
 
     // Add single ask
-    bool tob_changed = book.update(Side::SELL, Price{51000}, 200);
+    bool tob_changed = book.update(Side::SELL, Price(51000.0), 200);
     EXPECT_TRUE(tob_changed);
 
     EXPECT_FALSE(book.empty());
@@ -117,7 +117,7 @@ TEST_F(OrderBookTest, BasicUpdates_SingleAskUpdate) {
     const auto& tob = book.top_of_book();
     EXPECT_EQ(tob.bid_price.raw_value(), 0);
     EXPECT_EQ(tob.bid_qty, 0);
-    EXPECT_EQ(tob.ask_price, Price{51000});
+    EXPECT_EQ(tob.ask_price, Price(51000.0));
     EXPECT_EQ(tob.ask_qty, 200);
     EXPECT_FALSE(tob.valid());  // Need both bid and ask for valid TOB
 }
@@ -127,19 +127,19 @@ TEST_F(OrderBookTest, BasicUpdates_BothSidesValidTOB) {
     OrderBook book(instrument, *pool_);
 
     // Add bid and ask
-    bool bid_changed = book.update(Side::BUY, Price{50000}, 100);
-    bool ask_changed = book.update(Side::SELL, Price{51000}, 200);
+    bool bid_changed = book.update(Side::BUY, Price(50000.0), 100);
+    bool ask_changed = book.update(Side::SELL, Price(51000.0), 200);
 
     EXPECT_TRUE(bid_changed);
     EXPECT_TRUE(ask_changed);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});
+    EXPECT_EQ(tob.bid_price, Price(50000.0));
     EXPECT_EQ(tob.bid_qty, 100);
-    EXPECT_EQ(tob.ask_price, Price{51000});
+    EXPECT_EQ(tob.ask_price, Price(51000.0));
     EXPECT_EQ(tob.ask_qty, 200);
     EXPECT_TRUE(tob.valid());
-    EXPECT_EQ(tob.spread(), Price{1000});
+    EXPECT_EQ(tob.spread(), Price(1000.0));
 }
 
 TEST_F(OrderBookTest, BasicUpdates_MultipleLevelsSameSide) {
@@ -147,9 +147,9 @@ TEST_F(OrderBookTest, BasicUpdates_MultipleLevelsSameSide) {
     OrderBook book(instrument, *pool_);
 
     // Add multiple bid levels
-    bool changed1 = book.update(Side::BUY, Price{50000}, 100);
-    bool changed2 = book.update(Side::BUY, Price{49900}, 150);
-    bool changed3 = book.update(Side::BUY, Price{50100}, 75);  // New best bid
+    bool changed1 = book.update(Side::BUY, Price(50000.0), 100);
+    bool changed2 = book.update(Side::BUY, Price(49900.0), 150);
+    bool changed3 = book.update(Side::BUY, Price(50100.0), 75);  // New best bid
 
     EXPECT_TRUE(changed1);   // First bid changes TOB
     EXPECT_FALSE(changed2);  // Lower bid doesn't change TOB
@@ -158,7 +158,7 @@ TEST_F(OrderBookTest, BasicUpdates_MultipleLevelsSameSide) {
     EXPECT_EQ(book.bid_depth(), 3);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50100});  // Best bid
+    EXPECT_EQ(tob.bid_price, Price(50100.0));  // Best bid
     EXPECT_EQ(tob.bid_qty, 75);
 }
 
@@ -167,7 +167,7 @@ TEST_F(OrderBookTest, BasicUpdates_PriceLevelModification) {
     OrderBook book(instrument, *pool_);
 
     // Add initial level
-    bool initial_changed = book.update(Side::BUY, Price{50000}, 100);
+    bool initial_changed = book.update(Side::BUY, Price(50000.0), 100);
     EXPECT_TRUE(initial_changed);
 
     // Check initial state
@@ -175,7 +175,7 @@ TEST_F(OrderBookTest, BasicUpdates_PriceLevelModification) {
     EXPECT_EQ(initial_tob.bid_qty, 100);
 
     // Verify we can find the level
-    auto* level = book.find_level(Side::BUY, Price{50000});
+    auto* level = book.find_level(Side::BUY, Price(50000.0));
     EXPECT_NE(level, nullptr);
     EXPECT_EQ(level->quantity, 100);
 
@@ -186,20 +186,20 @@ TEST_F(OrderBookTest, BasicUpdates_PriceLevelModification) {
     // even if the change detection doesn't work.
 
     // Modify quantity at same price
-    book.update(Side::BUY, Price{50000}, 150);
+    book.update(Side::BUY, Price(50000.0), 150);
 
     EXPECT_EQ(book.bid_depth(), 1);  // Still only one level
 
     // Check if the level was updated directly in the book side
-    auto* updated_level = book.find_level(Side::BUY, Price{50000});
+    auto* updated_level = book.find_level(Side::BUY, Price(50000.0));
     EXPECT_NE(updated_level, nullptr);
     EXPECT_EQ(updated_level->quantity, 150);  // BookSide level should be updated
 
     // Force TOB cache update by adding another side
-    book.update(Side::SELL, Price{51000}, 200);
+    book.update(Side::SELL, Price(51000.0), 200);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});
+    EXPECT_EQ(tob.bid_price, Price(50000.0));
     EXPECT_EQ(tob.bid_qty, 150);  // Should be updated now
 }
 
@@ -208,19 +208,19 @@ TEST_F(OrderBookTest, BasicUpdates_PriceLevelDeletion) {
     OrderBook book(instrument, *pool_);
 
     // Add two bid levels
-    book.update(Side::BUY, Price{50000}, 100);
-    book.update(Side::BUY, Price{49900}, 150);
+    book.update(Side::BUY, Price(50000.0), 100);
+    book.update(Side::BUY, Price(49900.0), 150);
 
     EXPECT_EQ(book.bid_depth(), 2);
 
     // Delete best bid with zero quantity
-    bool changed = book.update(Side::BUY, Price{50000}, 0);
+    bool changed = book.update(Side::BUY, Price(50000.0), 0);
     EXPECT_TRUE(changed);  // Deleting best bid changes TOB
 
     EXPECT_EQ(book.bid_depth(), 1);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{49900});  // Second best becomes best
+    EXPECT_EQ(tob.bid_price, Price(49900.0));  // Second best becomes best
     EXPECT_EQ(tob.bid_qty, 150);
 }
 
@@ -229,18 +229,18 @@ TEST_F(OrderBookTest, BasicUpdates_NonTOBChanges) {
     OrderBook book(instrument, *pool_);
 
     // Setup initial book
-    book.update(Side::BUY, Price{50000}, 100);   // Best bid
-    book.update(Side::BUY, Price{49900}, 150);   // Second bid
-    book.update(Side::SELL, Price{51000}, 200);  // Best ask
+    book.update(Side::BUY, Price(50000.0), 100);   // Best bid
+    book.update(Side::BUY, Price(49900.0), 150);   // Second bid
+    book.update(Side::SELL, Price(51000.0), 200);  // Best ask
 
     // Modify second bid - should not change TOB
-    bool changed = book.update(Side::BUY, Price{49900}, 175);
+    bool changed = book.update(Side::BUY, Price(49900.0), 175);
     EXPECT_FALSE(changed);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});  // TOB unchanged
+    EXPECT_EQ(tob.bid_price, Price(50000.0));  // TOB unchanged
     EXPECT_EQ(tob.bid_qty, 100);
-    EXPECT_EQ(tob.ask_price, Price{51000});
+    EXPECT_EQ(tob.ask_price, Price(51000.0));
     EXPECT_EQ(tob.ask_qty, 200);
 }
 
@@ -251,8 +251,8 @@ TEST_F(OrderBookTest, Snapshot_EmptySnapshot) {
     OrderBook book(instrument, *pool_);
 
     // Add some initial data
-    book.update(Side::BUY, Price{50000}, 100);
-    book.update(Side::SELL, Price{51000}, 200);
+    book.update(Side::BUY, Price(50000.0), 100);
+    book.update(Side::SELL, Price(51000.0), 200);
 
     EXPECT_FALSE(book.empty());
 
@@ -274,7 +274,7 @@ TEST_F(OrderBookTest, Snapshot_SingleSidedBids) {
     OrderBook book(instrument, *pool_);
 
     // Create bid-only snapshot
-    std::vector<PriceLevel> bids = {{Price{50000}, 100}, {Price{49900}, 150}, {Price{49800}, 200}};
+    std::vector<PriceLevel> bids = {{Price(50000.0), 100}, {Price(49900.0), 150}, {Price(49800.0), 200}};
     std::vector<PriceLevel> asks;  // Empty
 
     bool changed = book.snapshot(bids, asks);
@@ -285,7 +285,7 @@ TEST_F(OrderBookTest, Snapshot_SingleSidedBids) {
     EXPECT_EQ(book.ask_depth(), 0);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});  // Best bid
+    EXPECT_EQ(tob.bid_price, Price(50000.0));  // Best bid
     EXPECT_EQ(tob.bid_qty, 100);
     EXPECT_EQ(tob.ask_price.raw_value(), 0);
     EXPECT_EQ(tob.ask_qty, 0);
@@ -298,7 +298,7 @@ TEST_F(OrderBookTest, Snapshot_SingleSidedAsks) {
 
     // Create ask-only snapshot
     std::vector<PriceLevel> bids;  // Empty
-    std::vector<PriceLevel> asks = {{Price{51000}, 100}, {Price{51100}, 150}, {Price{51200}, 200}};
+    std::vector<PriceLevel> asks = {{Price(51000.0), 100}, {Price(51100.0), 150}, {Price(51200.0), 200}};
 
     bool changed = book.snapshot(bids, asks);
 
@@ -310,7 +310,7 @@ TEST_F(OrderBookTest, Snapshot_SingleSidedAsks) {
     const auto& tob = book.top_of_book();
     EXPECT_EQ(tob.bid_price.raw_value(), 0);
     EXPECT_EQ(tob.bid_qty, 0);
-    EXPECT_EQ(tob.ask_price, Price{51000});  // Best ask
+    EXPECT_EQ(tob.ask_price, Price(51000.0));  // Best ask
     EXPECT_EQ(tob.ask_qty, 100);
     EXPECT_FALSE(tob.valid());  // Need both sides for valid TOB
 }
@@ -320,8 +320,8 @@ TEST_F(OrderBookTest, Snapshot_FullTwoSided) {
     OrderBook book(instrument, *pool_);
 
     // Create full two-sided snapshot
-    std::vector<PriceLevel> bids = {{Price{50000}, 100}, {Price{49900}, 150}, {Price{49800}, 200}};
-    std::vector<PriceLevel> asks = {{Price{51000}, 120}, {Price{51100}, 180}, {Price{51200}, 220}};
+    std::vector<PriceLevel> bids = {{Price(50000.0), 100}, {Price(49900.0), 150}, {Price(49800.0), 200}};
+    std::vector<PriceLevel> asks = {{Price(51000.0), 120}, {Price(51100.0), 180}, {Price(51200.0), 220}};
 
     bool changed = book.snapshot(bids, asks);
 
@@ -331,12 +331,12 @@ TEST_F(OrderBookTest, Snapshot_FullTwoSided) {
     EXPECT_EQ(book.ask_depth(), 3);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});
+    EXPECT_EQ(tob.bid_price, Price(50000.0));
     EXPECT_EQ(tob.bid_qty, 100);
-    EXPECT_EQ(tob.ask_price, Price{51000});
+    EXPECT_EQ(tob.ask_price, Price(51000.0));
     EXPECT_EQ(tob.ask_qty, 120);
     EXPECT_TRUE(tob.valid());
-    EXPECT_EQ(tob.spread(), Price{1000});
+    EXPECT_EQ(tob.spread(), Price(1000.0));
 }
 
 TEST_F(OrderBookTest, Snapshot_ZeroQuantitiesFiltered) {
@@ -345,14 +345,14 @@ TEST_F(OrderBookTest, Snapshot_ZeroQuantitiesFiltered) {
 
     // Create snapshot with some zero quantities (should be filtered out)
     std::vector<PriceLevel> bids = {
-        {Price{50000}, 100},  // Valid
-        {Price{49900}, 0},    // Should be filtered
-        {Price{49800}, 150}   // Valid
+        {Price(50000.0), 100},  // Valid
+        {Price(49900.0), 0},    // Should be filtered
+        {Price(49800.0), 150}   // Valid
     };
     std::vector<PriceLevel> asks = {
-        {Price{51000}, 0},    // Should be filtered
-        {Price{51100}, 120},  // Valid
-        {Price{51200}, 0}     // Should be filtered
+        {Price(51000.0), 0},    // Should be filtered
+        {Price(51100.0), 120},  // Valid
+        {Price(51200.0), 0}     // Should be filtered
     };
 
     bool changed = book.snapshot(bids, asks);
@@ -362,8 +362,8 @@ TEST_F(OrderBookTest, Snapshot_ZeroQuantitiesFiltered) {
     EXPECT_EQ(book.ask_depth(), 1);  // Only non-zero quantities
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});  // Best bid (49900 filtered out)
-    EXPECT_EQ(tob.ask_price, Price{51100});  // Best ask (51000 filtered out)
+    EXPECT_EQ(tob.bid_price, Price(50000.0));  // Best bid (49900 filtered out)
+    EXPECT_EQ(tob.ask_price, Price(51100.0));  // Best ask (51000 filtered out)
 }
 
 TEST_F(OrderBookTest, Snapshot_ReplacementBehavior) {
@@ -371,15 +371,15 @@ TEST_F(OrderBookTest, Snapshot_ReplacementBehavior) {
     OrderBook book(instrument, *pool_);
 
     // Initial book state
-    book.update(Side::BUY, Price{48000}, 100);
-    book.update(Side::SELL, Price{52000}, 200);
+    book.update(Side::BUY, Price(48000.0), 100);
+    book.update(Side::SELL, Price(52000.0), 200);
 
     EXPECT_EQ(book.bid_depth(), 1);
     EXPECT_EQ(book.ask_depth(), 1);
 
     // Apply completely different snapshot
-    std::vector<PriceLevel> bids = {{Price{50000}, 300}, {Price{49900}, 400}};
-    std::vector<PriceLevel> asks = {{Price{51000}, 500}};
+    std::vector<PriceLevel> bids = {{Price(50000.0), 300}, {Price(49900.0), 400}};
+    std::vector<PriceLevel> asks = {{Price(51000.0), 500}};
 
     bool changed = book.snapshot(bids, asks);
 
@@ -388,16 +388,16 @@ TEST_F(OrderBookTest, Snapshot_ReplacementBehavior) {
     EXPECT_EQ(book.ask_depth(), 1);  // New ask levels
 
     // Verify old levels are gone
-    EXPECT_EQ(book.find_level(Side::BUY, Price{48000}), nullptr);
-    EXPECT_EQ(book.find_level(Side::SELL, Price{52000}), nullptr);
+    EXPECT_EQ(book.find_level(Side::BUY, Price(48000.0)), nullptr);
+    EXPECT_EQ(book.find_level(Side::SELL, Price(52000.0)), nullptr);
 
     // Verify new levels exist
-    EXPECT_NE(book.find_level(Side::BUY, Price{50000}), nullptr);
-    EXPECT_NE(book.find_level(Side::SELL, Price{51000}), nullptr);
+    EXPECT_NE(book.find_level(Side::BUY, Price(50000.0)), nullptr);
+    EXPECT_NE(book.find_level(Side::SELL, Price(51000.0)), nullptr);
 
     const auto& tob = book.top_of_book();
-    EXPECT_EQ(tob.bid_price, Price{50000});
-    EXPECT_EQ(tob.ask_price, Price{51000});
+    EXPECT_EQ(tob.bid_price, Price(50000.0));
+    EXPECT_EQ(tob.ask_price, Price(51000.0));
 }
 
 // ===== Top-of-Book (TOB) Tracking Tests =====
@@ -411,25 +411,25 @@ TEST_F(OrderBookTest, TOB_ValidityConditions) {
     EXPECT_FALSE(tob1.valid());
 
     // Only bid - not valid
-    book.update(Side::BUY, Price{50000}, 100);
+    book.update(Side::BUY, Price(50000.0), 100);
     const auto& tob2 = book.top_of_book();
     EXPECT_FALSE(tob2.valid());
 
     // Only ask - not valid
     book.clear();
-    book.update(Side::SELL, Price{51000}, 200);
+    book.update(Side::SELL, Price(51000.0), 200);
     const auto& tob3 = book.top_of_book();
     EXPECT_FALSE(tob3.valid());
 
     // Both sides with proper spread - valid
-    book.update(Side::BUY, Price{50000}, 100);
+    book.update(Side::BUY, Price(50000.0), 100);
     const auto& tob4 = book.top_of_book();
     EXPECT_TRUE(tob4.valid());
-    EXPECT_EQ(tob4.bid_price, Price{50000});
-    EXPECT_EQ(tob4.ask_price, Price{51000});
+    EXPECT_EQ(tob4.bid_price, Price(50000.0));
+    EXPECT_EQ(tob4.ask_price, Price(51000.0));
 
     // Crossed book - not valid
-    book.update(Side::BUY, Price{52000}, 150);  // Bid higher than ask
+    book.update(Side::BUY, Price(52000.0), 150);  // Bid higher than ask
     const auto& tob5 = book.top_of_book();
     EXPECT_FALSE(tob5.valid());  // bid >= ask makes it invalid
 }
@@ -439,29 +439,29 @@ TEST_F(OrderBookTest, TOB_ChangesDetection) {
     OrderBook book(instrument, *pool_);
 
     // Initial setup
-    bool changed1 = book.update(Side::BUY, Price{50000}, 100);
-    bool changed2 = book.update(Side::SELL, Price{51000}, 200);
+    bool changed1 = book.update(Side::BUY, Price(50000.0), 100);
+    bool changed2 = book.update(Side::SELL, Price(51000.0), 200);
 
     EXPECT_TRUE(changed1);  // First bid changes TOB
     EXPECT_TRUE(changed2);  // First ask changes TOB
 
     // Add non-top levels - should not change TOB
-    bool changed3 = book.update(Side::BUY, Price{49900}, 150);
-    bool changed4 = book.update(Side::SELL, Price{51100}, 250);
+    bool changed3 = book.update(Side::BUY, Price(49900.0), 150);
+    bool changed4 = book.update(Side::SELL, Price(51100.0), 250);
 
     EXPECT_FALSE(changed3);  // Lower bid doesn't change TOB
     EXPECT_FALSE(changed4);  // Higher ask doesn't change TOB
 
     // Update top bid price - should change TOB
-    bool changed5 = book.update(Side::BUY, Price{50100}, 120);
+    bool changed5 = book.update(Side::BUY, Price(50100.0), 120);
     EXPECT_TRUE(changed5);  // New best bid changes TOB
 
     // Update top ask price - should change TOB
-    bool changed6 = book.update(Side::SELL, Price{50900}, 180);
+    bool changed6 = book.update(Side::SELL, Price(50900.0), 180);
     EXPECT_TRUE(changed6);  // New best ask changes TOB
 
     // Remove top bid - should change TOB
-    bool changed7 = book.update(Side::BUY, Price{50100}, 0);
+    bool changed7 = book.update(Side::BUY, Price(50100.0), 0);
     EXPECT_TRUE(changed7);  // Removing best bid changes TOB
 }
 
@@ -470,26 +470,26 @@ TEST_F(OrderBookTest, TOB_SpreadCalculations) {
     OrderBook book(instrument, *pool_);
 
     // Setup book with known spread
-    book.update(Side::BUY, Price{50000}, 100);
-    book.update(Side::SELL, Price{51000}, 200);
+    book.update(Side::BUY, Price(50000.0), 100);
+    book.update(Side::SELL, Price(51000.0), 200);
 
     const auto& tob1 = book.top_of_book();
-    EXPECT_EQ(tob1.spread(), Price{1000});  // 51000 - 50000 = 1000
+    EXPECT_EQ(tob1.spread(), Price(1000.0));  // 51000 - 50000 = 1000
 
     // Tighten spread
-    book.update(Side::BUY, Price{50500}, 150);
+    book.update(Side::BUY, Price(50500.0), 150);
     const auto& tob2 = book.top_of_book();
-    EXPECT_EQ(tob2.spread(), Price{500});  // 51000 - 50500 = 500
+    EXPECT_EQ(tob2.spread(), Price(500.0));  // 51000 - 50500 = 500
 
     // Tighten further from ask side
-    book.update(Side::SELL, Price{50700}, 180);
+    book.update(Side::SELL, Price(50700.0), 180);
     const auto& tob3 = book.top_of_book();
-    EXPECT_EQ(tob3.spread(), Price{200});  // 50700 - 50500 = 200
+    EXPECT_EQ(tob3.spread(), Price(200.0));  // 50700 - 50500 = 200
 
     // Very tight spread
-    book.update(Side::SELL, Price{50501}, 160);
+    book.update(Side::SELL, Price(50501.0), 160);
     const auto& tob4 = book.top_of_book();
-    EXPECT_EQ(tob4.spread(), Price{1});  // 50501 - 50500 = 1
+    EXPECT_EQ(tob4.spread(), Price(1.0));  // 50501 - 50500 = 1
 }
 
 TEST_F(OrderBookTest, TOB_BestBidAskUpdates) {
@@ -497,33 +497,33 @@ TEST_F(OrderBookTest, TOB_BestBidAskUpdates) {
     OrderBook book(instrument, *pool_);
 
     // Build up a book
-    book.update(Side::BUY, Price{50000}, 100);
-    book.update(Side::BUY, Price{49900}, 150);
-    book.update(Side::BUY, Price{49800}, 200);
+    book.update(Side::BUY, Price(50000.0), 100);
+    book.update(Side::BUY, Price(49900.0), 150);
+    book.update(Side::BUY, Price(49800.0), 200);
 
-    book.update(Side::SELL, Price{51000}, 120);
-    book.update(Side::SELL, Price{51100}, 180);
-    book.update(Side::SELL, Price{51200}, 220);
+    book.update(Side::SELL, Price(51000.0), 120);
+    book.update(Side::SELL, Price(51100.0), 180);
+    book.update(Side::SELL, Price(51200.0), 220);
 
     // Verify initial TOB
     const auto& tob1 = book.top_of_book();
-    EXPECT_EQ(tob1.bid_price, Price{50000});
+    EXPECT_EQ(tob1.bid_price, Price(50000.0));
     EXPECT_EQ(tob1.bid_qty, 100);
-    EXPECT_EQ(tob1.ask_price, Price{51000});
+    EXPECT_EQ(tob1.ask_price, Price(51000.0));
     EXPECT_EQ(tob1.ask_qty, 120);
 
     // Remove best bid - next level should become new best
-    book.update(Side::BUY, Price{50000}, 0);
+    book.update(Side::BUY, Price(50000.0), 0);
     const auto& tob2 = book.top_of_book();
-    EXPECT_EQ(tob2.bid_price, Price{49900});
+    EXPECT_EQ(tob2.bid_price, Price(49900.0));
     EXPECT_EQ(tob2.bid_qty, 150);
-    EXPECT_EQ(tob2.ask_price, Price{51000});  // Ask unchanged
+    EXPECT_EQ(tob2.ask_price, Price(51000.0));  // Ask unchanged
 
     // Remove best ask - next level should become new best
-    book.update(Side::SELL, Price{51000}, 0);
+    book.update(Side::SELL, Price(51000.0), 0);
     const auto& tob3 = book.top_of_book();
-    EXPECT_EQ(tob3.bid_price, Price{49900});  // Bid unchanged
-    EXPECT_EQ(tob3.ask_price, Price{51100});
+    EXPECT_EQ(tob3.bid_price, Price(49900.0));  // Bid unchanged
+    EXPECT_EQ(tob3.ask_price, Price(51100.0));
     EXPECT_EQ(tob3.ask_qty, 180);
 }
 
@@ -532,8 +532,8 @@ TEST_F(OrderBookTest, TOB_CachingCorrectness) {
     OrderBook book(instrument, *pool_);
 
     // Setup initial book
-    book.update(Side::BUY, Price{50000}, 100);
-    book.update(Side::SELL, Price{51000}, 200);
+    book.update(Side::BUY, Price(50000.0), 100);
+    book.update(Side::SELL, Price(51000.0), 200);
 
     // Get TOB multiple times - should be same cached object
     const auto& tob1 = book.top_of_book();
@@ -550,10 +550,10 @@ TEST_F(OrderBookTest, TOB_CachingCorrectness) {
     EXPECT_EQ(tob1.ask_qty, best_ask->quantity);
 
     // Modify book and verify cache is updated
-    book.update(Side::BUY, Price{50100}, 150);
+    book.update(Side::BUY, Price(50100.0), 150);
     const auto& tob3 = book.top_of_book();
 
-    EXPECT_EQ(tob3.bid_price, Price{50100});  // Cache updated
+    EXPECT_EQ(tob3.bid_price, Price(50100.0));  // Cache updated
     EXPECT_EQ(tob3.bid_qty, 150);
 
     // Direct access should match cached values

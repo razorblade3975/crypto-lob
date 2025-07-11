@@ -188,7 +188,7 @@ class BookSide {
 
             pool_.destroy(node);
         }
-        nth_price_ = Price{0};  // Sentinel: means "book narrower than N"; never used in affects_top_n()
+        nth_price_ = Price::zero();  // Sentinel: means "book narrower than N"; never used in affects_top_n()
     }
 
     [[nodiscard]] std::size_t size() const noexcept {
@@ -236,13 +236,13 @@ class BookSide {
     PoolType& pool_;
     Tree tree_;
     Hash index_;
-    Price nth_price_{0};  // nth_price_ == 0 means "book narrower than N"; never used in affects_top_n()
+    Price nth_price_{Price::zero()};  // nth_price_ == 0 means "book narrower than N"; never used in affects_top_n()
     std::size_t top_n_depth_{20};
 
     // TODO: Consider caching iterator to nth node for micro-optimization
     void update_nth_price() {
         if (tree_.size() < top_n_depth_) {
-            nth_price_ = Price{0};
+            nth_price_ = Price::zero();
             return;
         }
 
