@@ -15,7 +15,7 @@ enum class ExchangeId : uint8_t {
     KUCOIN_SPOT = 4,
     KUCOIN_FUT = 5,
     OKX_SPOT = 6,
-    OKX_SPOT = 7,
+    OKX_FUT = 7,
 };
 
 // Market side
