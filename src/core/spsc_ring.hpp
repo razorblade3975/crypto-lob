@@ -71,9 +71,14 @@ class SPSCRing {
 
   public:
     explicit SPSCRing(size_t capacity) : capacity_(round_up_to_power_of_two(capacity)), mask_(capacity_ - 1) {
-        // Runtime guard to ensure capacity is within safe bounds
-        if (capacity_ > MAX_CAPACITY) {
+        // Check original request before rounding/capping
+        if (capacity > MAX_CAPACITY) {
+#ifdef __cpp_exceptions
             throw std::invalid_argument("Ring capacity exceeds maximum safe size");
+#else
+            // When exceptions are disabled, terminate on invalid capacity
+            std::terminate();
+#endif
         }
 
         // Allocate cache-line aligned memory for the slots array.
