@@ -49,6 +49,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential ninja-build make \
       gdb valgrind linux-tools-generic strace htop vim \
+      clang-format-17 clang-tidy-17 \
  && rm -rf /var/lib/apt/lists/*
 
 RUN echo 'vm.nr_hugepages=1024' > /etc/sysctl.d/99-hugepages.conf

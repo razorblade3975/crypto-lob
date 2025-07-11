@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CONAN_VERSION: 2.0.17
+  CMAKE_VERSION: 3.20
+  CLANG_VERSION: 17
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang-17 \
+          libc++-17-dev \
+          libc++abi-17-dev \
+          cmake \
+          ninja-build \
+          libnuma-dev \
+          python3-pip
+        
+        # Set Clang 17 as default
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 100
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-17 100
+        sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang-17 100
+        sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++-17 100
+    
+    - name: Install Conan
+      run: |
+        pip3 install --upgrade pip
+        pip3 install conan==${{ env.CONAN_VERSION }}
+        conan profile detect --force
+        
+        # Configure Conan profile for Clang 17 with libc++
+        conan profile show default
+        conan profile update settings.compiler=clang default
+        conan profile update settings.compiler.version=17 default
+        conan profile update settings.compiler.libcxx=libc++ default
+        conan profile update settings.compiler.cppstd=20 default
+        conan profile update settings.build_type=${{ matrix.build_type }} default
+    
+    - name: Cache Conan packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.conan2
+        key: ${{ runner.os }}-conan-${{ hashFiles('conanfile.txt') }}-${{ matrix.build_type }}
+        restore-keys: |
+          ${{ runner.os }}-conan-${{ hashFiles('conanfile.txt') }}-
+          ${{ runner.os }}-conan-
+    
+    - name: Install dependencies
+      run: |
+        conan install . --output-folder=build --build=missing \
+          -s compiler=clang -s compiler.version=17 \
+          -s compiler.libcxx=libc++ -s compiler.cppstd=20 \
+          -s build_type=${{ matrix.build_type }}
+    
+    - name: Configure CMake
+      run: |
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+              -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
+              -DCMAKE_C_COMPILER=clang-17 \
+              -DCMAKE_CXX_COMPILER=clang++-17 \
+              -DBUILD_TESTS=ON \
+              -DENABLE_SANITIZERS=${{ matrix.build_type == 'Debug' && 'ON' || 'OFF' }} \
+              -G Ninja \
+              ..
+    
+    - name: Build
+      run: |
+        cd build
+        ninja -j$(nproc)
+    
+    - name: Run tests
+      run: |
+        cd build
+        ctest -V --output-on-failure
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.build_type }}
+        path: build/Testing/
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build development Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: crypto-lob:dev-${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          BUILD_TYPE=Debug
+    
+    - name: Build production Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: crypto-lob:prod-${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          BUILD_TYPE=Release
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang-17 \
+          clang-tidy-17 \
+          clang-format-17 \
+          cppcheck
+    
+    - name: Run clang-format check
+      run: |
+        find src tests -name '*.cpp' -o -name '*.hpp' | xargs clang-format-17 --dry-run --Werror
+    
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --error-exitcode=1 --inline-suppr \
+                 --suppress=missingIncludeSystem \
+                 -I src/ \
+                 src/ tests/

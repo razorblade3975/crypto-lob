@@ -1,8 +1,8 @@
 #pragma once
 
-#include <cstdint>
-#include <concepts>
 #include <chrono>
+#include <concepts>
+#include <cstdint>
 
 namespace crypto_lob::core {
 
@@ -10,7 +10,7 @@ namespace crypto_lob::core {
 using Timestamp = uint64_t;
 
 // Concept for type safety
-template<typename T>
+template <typename T>
 concept TimestampType = std::same_as<T, Timestamp>;
 
 // Utility function to get current timestamp

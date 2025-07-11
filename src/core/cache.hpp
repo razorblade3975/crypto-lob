@@ -1,10 +1,10 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <new>      // For std::hardware_destructive_interference_size
 #include <array>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <new>  // For std::hardware_destructive_interference_size
 
 namespace crypto_lob::core {
 
@@ -15,24 +15,24 @@ static constexpr std::size_t CACHELINE_SIZE = 64;
 #define CACHE_ALIGNED alignas(CACHELINE_SIZE)
 
 // Struct wrapper for cache-aligned types (alignment only)
-template<typename T>
-struct CACHE_ALIGNED aligned_64 { 
-    T value; 
+template <typename T>
+struct CACHE_ALIGNED aligned_64 {
+    T value;
 };
 
 // Struct wrapper for cache-aligned types with full 64-byte size
-template<typename T>
+template <typename T>
 struct CACHE_ALIGNED sized_64 {
     T value;
     std::array<std::byte, CACHELINE_SIZE - sizeof(T)> padding{};
-    
+
     static_assert(sizeof(T) <= CACHELINE_SIZE, "Type too large for cache line");
 };
 
 // Cache-aligned padding struct for preventing false sharing
-template<std::size_t N>
-struct CACHE_ALIGNED cache_pad { 
-    std::byte data[N]; 
+template <std::size_t N>
+struct CACHE_ALIGNED cache_pad {
+    std::byte data[N];
 };
 
 // Align size to cache line boundary using bit-math for hot path performance
@@ -88,18 +88,18 @@ inline void prefetch(const void* addr, PrefetchHint hint = PrefetchHint::READ_TE
 }
 
 // Utility to calculate optimal padding between two members
-template<typename T1, typename T2>
+template <typename T1, typename T2>
 [[nodiscard]] constexpr std::size_t padding_between() noexcept {
-    static_assert(sizeof(T1) <= CACHELINE_SIZE && sizeof(T2) <= CACHELINE_SIZE, 
+    static_assert(sizeof(T1) <= CACHELINE_SIZE && sizeof(T2) <= CACHELINE_SIZE,
                   "Types larger than cache line may cause padding wraparound");
-    
+
     std::size_t total_size = sizeof(T1) + sizeof(T2);
     std::size_t aligned_size = align_to_cacheline(total_size);
     return aligned_size - total_size;
 }
 
 // Cache-friendly structure layout verification
-template<typename T>
+template <typename T>
 [[nodiscard]] constexpr bool is_cache_friendly() noexcept {
     return sizeof(T) <= CACHELINE_SIZE && alignof(T) >= CACHELINE_SIZE;
 }
@@ -111,7 +111,7 @@ inline void memory_barrier() noexcept {
 
 // Branch prediction hints for hot paths - guard against libc conflicts
 #ifndef likely
-#define likely(x)   __builtin_expect(!!(x), 1)
+#define likely(x) __builtin_expect(!!(x), 1)
 #endif
 
 #ifndef unlikely
