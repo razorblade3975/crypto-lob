@@ -12,7 +12,8 @@ list(APPEND CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})
 # Build options
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_BENCHMARKS "Build benchmarks" OFF)
-option(ENABLE_SANITIZERS "Enable sanitizers" OFF)
+set(ENABLE_SANITIZERS "OFF" CACHE STRING "Enable sanitizers: OFF, ASAN, TSAN")
+set_property(CACHE ENABLE_SANITIZERS PROPERTY STRINGS "OFF" "ASAN" "TSAN")
 
 # Compiler-specific flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -37,9 +38,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         add_link_options(-flto=thin)
     endif()
     
-    if(ENABLE_SANITIZERS)
+    # Sanitizer configuration
+    if(ENABLE_SANITIZERS STREQUAL "ASAN")
+        message(STATUS "Enabling AddressSanitizer and UndefinedBehaviorSanitizer")
         add_compile_options(-fsanitize=address -fsanitize=undefined)
         add_link_options(-fsanitize=address -fsanitize=undefined)
+    elseif(ENABLE_SANITIZERS STREQUAL "TSAN")
+        message(STATUS "Enabling ThreadSanitizer")
+        add_compile_options(-fsanitize=thread)
+        add_link_options(-fsanitize=thread)
+        # ThreadSanitizer is incompatible with AddressSanitizer/UBSan
     endif()
 endif()
 

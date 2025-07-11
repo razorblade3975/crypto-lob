@@ -36,13 +36,25 @@ jobs:
     strategy:
       matrix:
         build_type: [Debug, Release]
+        sanitizer: [ASAN, TSAN, OFF]
         include:
           - build_type: Debug
-            enable_sanitizers: "ON"
+            sanitizer: ASAN
+            enable_sanitizers: "ASAN"
+            conan_build_type: "Debug"
+          - build_type: Debug
+            sanitizer: TSAN
+            enable_sanitizers: "TSAN"
             conan_build_type: "Debug"
           - build_type: Release
+            sanitizer: OFF
             enable_sanitizers: "OFF"
             conan_build_type: "Release"
+        exclude:
+          - build_type: Release
+            sanitizer: ASAN
+          - build_type: Release
+            sanitizer: TSAN
     
     steps:
     - name: Checkout code
@@ -73,7 +85,7 @@ jobs:
                 -G Ninja .. && \
           echo '⚡ Building with Ninja...' && \
           ninja -j\$(nproc) && \
-          echo '🧪 Running ${{ matrix.build_type }} tests...' && \
+          echo '🧪 Running ${{ matrix.build_type }} tests with ${{ matrix.sanitizer }} sanitizer...' && \
           ctest -V --output-on-failure
         "
     
@@ -81,7 +93,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-results-${{ matrix.build_type }}
+        name: test-results-${{ matrix.build_type }}-${{ matrix.sanitizer }}
         path: |
           build/Testing/
           *.log
