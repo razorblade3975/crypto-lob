@@ -8,6 +8,7 @@
 #include <cstdint>  // for uint64_t
 #include <cstdlib>
 #include <exception>  // for std::terminate
+#include <limits>     // for std::numeric_limits
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -17,6 +18,8 @@
 #include "cache.hpp"  // For CACHELINE_SIZE, likely, unlikely
 
 // Linux-specific headers for huge pages
+#include <unistd.h>  // for sysconf
+
 #include <sys/mman.h>
 
 namespace crypto_lob::core {
@@ -60,6 +63,13 @@ struct CacheConfig {
         }
         // Fix: Ensure batch_size is never 0
         batch_size = std::max<size_t>(1, batch_size);
+        // Fix: Ensure shrink_threshold < cache_size
+        // (shrink_threshold == cache_size would trigger constant shrinking)
+        if (shrink_threshold >= cache_size) {
+            shrink_threshold = cache_size / 4;  // Default to 25% of cache size
+        }
+        // Fix: Ensure shrink_threshold is never 0
+        shrink_threshold = std::max<size_t>(1, shrink_threshold);
     }
 };
 
@@ -68,13 +78,13 @@ constexpr size_t round_up_to_power_of_two(size_t value) noexcept {
     if (value == 0) {
         return 1;
     }
-    // Fix: Handle case when value is already max power of 2 (2^63)
-    // to avoid undefined behavior from shift by 64
+    // Fix: Handle case when value is already max power of 2
+    // to avoid undefined behavior from shift by size_t bit width
     const int clz = std::countl_zero(value - 1);
     if (clz == 0) {
         return value;  // Already at max power of 2
     }
-    return size_t{1} << (64 - clz);
+    return size_t{1} << (std::numeric_limits<size_t>::digits - clz);
 }
 
 // Round up to nearest multiple of alignment with safety checks
@@ -99,8 +109,7 @@ struct AllocationResult {
 // Huge page allocator with pre-faulting support
 class HugePageAllocator {
   private:
-    static constexpr size_t HUGE_PAGE_SIZE_2MB = 2 * 1024 * 1024;     // 2MB
-    static constexpr size_t HUGE_PAGE_SIZE_1GB = 1024 * 1024 * 1024;  // 1GB
+    static constexpr size_t HUGE_PAGE_SIZE_2MB = 2 * 1024 * 1024;  // 2MB
 
     // Round up size to huge page boundary
     static size_t round_up_to_huge_page(size_t size) noexcept {
@@ -117,7 +126,12 @@ class HugePageAllocator {
         size_t prefault_size = std::min(size, max_prefault_bytes);
 
         // Touch each page to force allocation
-        const size_t page_size = HUGE_PAGE_SIZE_2MB;
+        // Use system page size (typically 4KB) to ensure all pages are touched
+        // even if transparent huge pages split back to regular pages
+        const size_t system_page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+        // Use the larger stride when we know we have real huge pages,
+        // otherwise use system page size to avoid missing pages
+        const size_t page_size = (size >= HUGE_PAGE_SIZE_2MB) ? HUGE_PAGE_SIZE_2MB : system_page_size;
         auto* byte_ptr = static_cast<volatile char*>(ptr);
 
         for (size_t offset = 0; offset < prefault_size; offset += page_size) {
@@ -254,7 +268,7 @@ struct TaggedPointer128 {
 
     bool compare_exchange_weak(TaggedPtr& expected,
                                TaggedPtr new_val,
-                               std::memory_order success = std::memory_order_release,
+                               std::memory_order success = std::memory_order_acq_rel,
                                std::memory_order failure = std::memory_order_acquire) noexcept {
         return value_.compare_exchange_weak(expected, new_val, success, failure);
     }
@@ -651,16 +665,17 @@ class MemoryPool final {
             auto* node = new (current) FreeNode();
 
             if (prev) [[likely]] {
-                // Fix: Use incremental tags to improve ABA protection
-                // Each node gets a unique initial tag
-                prev->next.set(node, i);
+                // Fix: Use incremental tags starting from 1 to improve ABA protection
+                // Each node gets a unique initial tag (i+1)
+                prev->next.set(node, i + 1);
             }
 
             prev = node;
             current += BLOCK_SIZE;
         }
 
-        free_head_.set(reinterpret_cast<FreeNode*>(memory_), 0);
+        // Fix: Start head tag from 1 instead of 0 for better ABA protection
+        free_head_.set(reinterpret_cast<FreeNode*>(memory_), 1);
     }
 
     // Handle pool depletion based on policy
@@ -986,7 +1001,11 @@ class PoolPtr {
         if (ptr_ && pool_) [[likely]] {
             pool_->destroy(ptr_);
         }
-        ptr_ = pool_->construct(std::forward<Args>(args)...);
+        T* new_ptr = pool_->construct(std::forward<Args>(args)...);
+        if (!new_ptr) [[unlikely]] {
+            throw std::bad_alloc();
+        }
+        ptr_ = new_ptr;
     }
 
     void reset() noexcept {
