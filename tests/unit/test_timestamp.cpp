@@ -289,7 +289,7 @@ TEST_F(TimestampTest, TimestampLatencyMeasurement) {
         Timestamp start = current_timestamp();
 
         // Simulate some work - increase workload to ensure measurable time
-        volatile int sum = 0;
+        volatile int64_t sum = 0;
         for (int j = 0; j < 10000; ++j) {
             sum += j * j;  // More complex operation
         }
