@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a C++ cryptocurrency market data provider system designed for high-frequency trading (HFT) applications. The system focuses on ultra-low latency, high throughput, and predictable performance for processing real-time market data from multiple cryptocurrency exchanges.
 
+**Important**: This project uses exchange WebSocket streams for market data only (e.g., Binance WebSocket Streams), not WebSocket APIs for trading. The focus is on consuming and normalizing L2 order book data, not executing trades.
+
 ## High-Level Architecture
 
 The system is architected as a single-process, multi-threaded application with specialized components:
@@ -216,9 +218,74 @@ Must follow precise algorithm for differential feed reconstruction:
 
 ### Exchange-Specific Requirements
 
-- **Binance**: 20-second ping interval, 1-minute pong response requirement
-- **KuCoin**: Two-step auth (REST token → WebSocket), 24-hour token expiry
-- **OKX**: Distinct public/private channels, specific subscription format
+#### Binance WebSocket Details
+
+**1. WebSocket Streams (Market Data)**
+- **Base URLs**: 
+  - Primary: `wss://stream.binance.com:9443`
+  - Alternative: `wss://stream.binance.com:443`
+  - Market data only: `wss://data-stream.binance.vision`
+- **Connection Types**:
+  - Raw streams: Single stream per connection (e.g., `/ws/bnbusdt@aggTrade`)
+  - Combined streams: Multiple streams in one connection (e.g., `/stream?streams=bnbusdt@aggTrade/btcusdt@depth`)
+- **Heartbeat**: 
+  - Connection timeout: 24 hours maximum
+  - Keep-alive requirement: Send message every 3 minutes to maintain connection
+  - Ping frame interval: 20 seconds (server sends ping, client must respond with pong)
+  - Pong timeout: 1 minute (connection closed if no pong received)
+- **Message Format**: JSON with event type field `"e"` (e.g., `"aggTrade"`, `"depthUpdate"`)
+- **Subscription**: Direct URL-based (no separate subscribe message needed)
+- **Rate Limits**: 5 requests per second for new connections
+- **No Authentication**: Public market data only, no user-specific streams
+
+**2. WebSocket API (Trading/Account Management)**
+- **Base URLs**:
+  - Production: `wss://ws-api.binance.com/ws-api/v3`
+  - Testnet: `wss://ws-api.testnet.binance.vision/ws-api/v3`
+- **Authentication**: 
+  - Ed25519 keys only (not HMAC)
+  - Session-based with `session.logon` method
+  - Requires API key, timestamp, and signature
+- **Request/Response Model**:
+  - Each request needs unique ID (UUID recommended)
+  - Response includes matching request ID
+  - Supports trading operations and account queries
+- **Key Methods**: `exchangeInfo`, `session.logon`, `session.status`, `session.logout`
+- **Note**: This is for trading operations, not market data streaming
+
+#### KuCoin WebSocket Details
+- **Two-step auth**: REST token → WebSocket connection
+- **Token expiry**: 24 hours
+- **Ping requirement**: 18 seconds
+
+#### OKX WebSocket Details
+- **Base URLs**:
+  - Production: `wss://ws.okx.com:8443/ws/v5/public`
+  - Demo Trading: `wss://wspap.okx.com:8443/ws/v5/public`
+- **Rate Limits**:
+  - 3 connections per second per IP
+  - 480 total subscribe/unsubscribe requests per hour
+- **Connection Management**:
+  - Automatic disconnect after 30 seconds of inactivity
+  - Client-initiated ping/pong required (send "ping" string, expect "pong")
+  - Reconnection required if no pong received
+- **Subscription Format**:
+  ```json
+  {
+    "op": "subscribe",
+    "args": [{
+      "channel": "books",
+      "instId": "BTC-USDT"
+    }]
+  }
+  ```
+- **Order Book Channels**:
+  - `books`: 400-level snapshot + updates
+  - `books5`: 5-level snapshot + updates  
+  - `books-l2-tbt`: Tick-by-tick full depth
+  - `bbo-tbt`: Best bid/offer updates
+- **Message Format**: JSON with `arg` (channel info) and `data` array
+- **No Authentication Required**: For public market data channels
 
 ## Development Commands
 
@@ -428,9 +495,17 @@ ctest -V
   - [ ] Message buffering during reconnection
   - [ ] Connection state machine
 - [ ] Exchange-specific connectors:
-  - [ ] Binance: Direct URL streams, 20s ping interval
+  - [ ] Binance: 
+    - Direct URL streams (e.g., `/ws/btcusdt@depth20@100ms`)
+    - No subscription messages needed (URL-based)
+    - 20s server ping → client pong required
+    - 3-minute activity requirement
   - [ ] KuCoin: Token-based auth, 18s ping requirement
-  - [ ] OKX: Channel-based subscriptions, optional VIP auth
+  - [ ] OKX: 
+    - Channel-based subscriptions with op/args format
+    - 30-second timeout, client-initiated ping/pong
+    - Multiple book channels (books, books5, books-l2-tbt)
+    - Rate limit: 3 conn/sec, 480 sub/hour
   - [ ] Bybit: Separate spot/futures endpoints
   - [ ] Bitget: Unified endpoint with instType
   - [ ] Gate.io: REST snapshot requirement
