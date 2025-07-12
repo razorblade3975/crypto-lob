@@ -222,3 +222,335 @@ A true L3 feed publishes *every* add / modify / cancel event with an `order_id`,
 ---
 
 **Bottom line:** treat every incoming depth message as *level-based*. Build your engine around price-level deltas + snapshot reconciliation; add optional logic only if you later integrate a true L3 source such as Coinbase’s “full” channel or Bitstamp’s “diff-order-book”.
+
+
+# Crypto Exchange WebSocket API Code Examples (Binance, OKX, KuCoin, Bybit, Bitget)
+
+In this guide, we present sample WebSocket API usage for **Binance, OKX, KuCoin, Bybit, and Bitget** – covering real-time **spot**, **margin**, and **derivatives** data streams. Each section provides code snippets (in JavaScript for clarity) demonstrating how to connect to public market data feeds (tickers, trades, order books) as well as how to handle private/user data streams (such as order updates and account changes) where applicable. The examples include connecting to the exchange’s WebSocket endpoints, subscribing to channels, and handling incoming messages in real time. Citations to official docs are provided for accuracy and further reference.
+
+## Binance WebSocket API
+
+Binance offers separate WebSocket endpoints for different products: **Spot (including margin)** and **Futures**. The base URL for Spot market streams is `wss://stream.binance.com:9443` (secure WebSocket). Binance Futures (USDⓈ-M perpetual futures) use a different base, e.g. `wss://fstream.binance.com` for USDT-M futures streams. You can connect to a single “raw” stream (e.g. `/ws/btcusdt@trade`) or use combined streams to subscribe to multiple symbols at once. Binance’s WebSocket API supports **public market data** (trades, book depth, tickers, etc.) via these streams, while **user-specific data** (orders, account updates) are accessed via a **User Data Stream** that requires API key authentication (via a **listenKey**).
+
+### Spot Market Data Stream Example
+
+To subscribe to Binance’s spot market data via WebSocket, you can either specify the stream in the URL or connect first and then send a subscription request. Below is a **Node.js example** that opens a WebSocket connection to Binance and then subscribes to two streams: the aggregate trade feed and depth feed for BTC/USDT. We use the Binance Spot base URL and send a JSON message with `method: "SUBSCRIBE"` and the desired stream names, as per Binance’s specification:
+
+```js
+const WebSocket = require('ws');
+const ws = new WebSocket('wss://stream.binance.com:9443/ws');  // Spot base endpoint
+
+ws.on('open', () => {
+  // Subscribe to BTCUSDT aggregate trades and depth updates
+  const subscribeMsg = {
+    method: "SUBSCRIBE",
+    params: ["btcusdt@aggTrade", "btcusdt@depth"],  // streams: aggTrade and depth
+    id: 1
+  };
+  ws.send(JSON.stringify(subscribeMsg));  // send subscription request
+});
+
+ws.on('message', (data) => {
+  const event = JSON.parse(data);
+  console.log(event);
+  // The event.data will contain real-time trade or order book info for BTCUSDT
+});
+```
+
+In this snippet, once the WebSocket is open, we send a subscription message. Binance expects an `id` field and a `params` list of stream names. The server will respond with a confirmation (`result": null` if successful) and then start streaming the requested data continuously. (Note: You could also connect directly to a combined stream URL like `.../stream?streams=btcusdt@aggTrade/btcusdt@depth` to get the same result.)
+
+### Futures Market Data Stream Example
+
+For Binance **USDT-M futures**, the approach is similar but using the futures WebSocket endpoint. The base URL is `wss://fstream.binance.com` (for coin-margined futures it’s `wss://dstream.binance.com`). The subscription message format is the same. For example, to get BTCUSDT perpetual futures trades, you could connect to `wss://fstream.binance.com/ws` and then subscribe to `"btcusdt@trade"` or other futures stream names. The code structure would mirror the spot example above, just with the different URL. For instance:
+
+```js
+const wsFut = new WebSocket('wss://fstream.binance.com/ws');  // Futures base endpoint
+wsFut.on('open', () => {
+  wsFut.send(JSON.stringify({
+    method: "SUBSCRIBE",
+    params: ["btcusdt@trade", "btcusdt@depth20"],  // e.g. trades and 20-level depth
+    id: 1
+  }));
+});
+wsFut.on('message', msg => console.log(JSON.parse(msg)));
+```
+
+This would stream live trades and order book updates for the BTCUSDT perpetual contract. Binance’s futures streams use similar naming conventions (all lowercase symbol + @streamName).
+
+### User Data Stream (Private Account Updates)
+
+Binance’s user-specific events (e.g. order execution reports, balance updates) are delivered via a **User Data Stream**. To use it, you must first obtain a **listenKey** (a temporary token) through the REST API, then connect to `wss://stream.binance.com:9443/ws/<listenKey>`. Once connected, Binance will push events like `executionReport` (order updates), `outboundAccountPosition` (account balance changes), etc. for your account in real-time. Below is an example of connecting to the user stream after obtaining a listenKey (note: in practice you’d use the REST API to get the listenKey, which we assume is stored in `listenKey` variable):
+
+```js
+// Assume listenKey is a string obtained via POST /api/v3/userDataStream
+const userWs = new WebSocket(`wss://stream.binance.com:9443/ws/${listenKey}`);
+userWs.on('message', (data) => {
+  const evt = JSON.parse(data);
+  console.log(`User Stream Event: ${evt.e}`, evt);
+  // e.g. evt.e might be "executionReport" for order updates or "outboundAccountPosition" for balance update
+});
+```
+
+This will log any personal account events. For example, an `executionReport` event includes details of an order’s status (filled, canceled, etc.), and an `outboundAccountPosition` event shows balance changes (like funds moved from Spot to Margin). **Margin trading** on Binance is integrated into this same user data stream – for instance, if you have margin account updates, they will also appear in these events (e.g. balance updates when transferring between Spot and Margin are indicated by `balanceUpdate` events).
+
+*Note:* Binance has recently introduced a new **WebSocket API** that can directly use API keys to authenticate and subscribe to user data without a listenKey (as of 2025). However, the above listenKey method is still commonly used (the new method uses a different endpoint and request format, and is beyond the scope of this simple example).
+
+## OKX WebSocket API
+
+OKX’s API (version 5) provides unified WebSocket endpoints for all its markets (spot, margin, futures, options). There are separate base URLs for **public** and **private** streams. For example, the public endpoint is `wss://ws.okx.com:8443/ws/v5/public` for market data, and the private endpoint is `wss://ws.okx.com:8443/ws/v5/private` for user data (trading/account updates).
+
+**Public market data** channels do not require authentication – you can subscribe to tickers, trades, order books, etc. by sending a subscribe message after connecting. **Private channels** (like order updates) require a login message with your API key, passphrase, and a signed timestamp for authentication.
+
+### Public Market Data Subscription Example
+
+Here is a **JavaScript example** using OKX’s WebSocket to subscribe to a spot ticker stream. In this example, we subscribe to the BTC-USDT ticker channel (which provides real-time price updates). The code uses the public WebSocket endpoint and sends an `op: "subscribe"` request with the channel name and instrument ID as per OKX’s specification:
+
+```js
+const WebSocket = require('ws');
+const ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');  // OKX public WS endpoint
+
+ws.on('open', () => {
+  const subscribeMessage = {
+    op: "subscribe",
+    args: [
+      {
+        channel: "tickers",
+        instId: "BTC-USDT"  // instrument ID for BTC/USDT spot market
+      }
+    ]
+  };
+  ws.send(JSON.stringify(subscribeMessage));
+});
+
+ws.on('message', (data) => {
+  const json = JSON.parse(data);
+  console.log(json);
+  // Expected output includes tickers data for BTC-USDT (last price, 24h volume, etc.)
+});
+```
+
+In this snippet, we connect to the public endpoint and, upon opening, send a message subscribing to the *tickers* channel for `instId: BTC-USDT`. OKX will then stream ticker updates for that trading pair. You can similarly subscribe to other channels by changing the `channel` and `instId` (for example, `channel: "trades"` for trade data, or `channel: "books"` for order book, as documented in OKX API). If multiple subscriptions are needed, you can include multiple objects in the `args` array in one message.
+
+### Private (User Data) Subscription Example
+
+To receive user-specific data such as order execution updates or account balance changes on OKX, you must authenticate with the private WebSocket. The authentication (“login”) message requires your API key, API passphrase, a timestamp, and a signature. The signature is a Base64-encoded HMAC SHA256 of the string: `<timestamp> + 'GET' + '/users/self/verify'` signed with your secret key. (This is per OKX API v5 spec for WebSocket login.)
+
+For example, after computing the signature (not shown here), you would send a message like:
+
+```js
+// Pseudocode for login (after connecting to wss://ws.okx.com:8443/ws/v5/private)
+const loginMsg = {
+  op: "login",
+  args: [{
+    apiKey: API_KEY,
+    passphrase: API_PASSPHRASE,
+    timestamp: TIMESTAMP,        // current Unix timestamp (seconds)
+    sign: SIGNATURE             // HMAC_SHA256 of "<timestamp>GET/users/self/verify"
+  }]
+};
+wsPrivate.send(JSON.stringify(loginMsg));
+```
+
+Upon successful auth, the server responds with an event confirming login (e.g. `{"event":"login","code":"0","msg":""}`). After that, you can send subscribe requests for private channels like order updates. For instance, subscribing to order events might look like:
+
+```js
+wsPrivate.send(JSON.stringify({
+  op: "subscribe",
+  args: [{ channel: "orders", instType: "ANY", instId: "BTC-USDT" }]
+}));
+```
+
+OKX private channels include order updates, account balance updates, position updates for futures, etc., which will stream in real-time once subscribed. (Refer to OKX API documentation for exact channel names and parameters for private subscriptions.)
+
+**Note:** Ensure to maintain the connection with periodic pings as required by OKX (they typically expect a ping or will send one, and you should respond to avoid timeouts).
+
+## KuCoin WebSocket API
+
+KuCoin provides real-time data via WebSocket for its Spot, Margin, and Futures trading. KuCoin’s WebSocket workflow is a bit different: you must first **obtain a token** (and server endpoint) from KuCoin’s REST API (`/api/v1/bullet-public` for public feeds, or `/api/v1/bullet-private` for private feeds). The REST response will contain a WebSocket URL (endpoint) and a `token`. You then connect to that URL with the token as a query parameter. This token negotiation step is required even for public data. Once connected, you’ll receive a welcome message, after which you can subscribe to topics.
+
+### Connecting and Subscribing to Market Data
+
+After retrieving a public token, you will get an endpoint like `wss://ws-api.kucoin.com/endpoint`. Here’s an example (in JavaScript) of connecting to KuCoin’s public WebSocket and subscribing to a ticker feed for BTC-USDT:
+
+```js
+const WebSocket = require('ws');
+// Normally, get token via POST https://api.kucoin.com/api/v1/bullet-public
+const token = "<YOUR_PUBLIC_TOKEN>";  
+const ws = new WebSocket(`wss://ws-api.kucoin.com/endpoint?token=${token}`);
+
+ws.on('open', () => {
+  console.log("KuCoin WebSocket connected.");
+  // Subscribe to BTC-USDT ticker updates (public channel)
+  const subMsg = {
+    type: "subscribe",
+    topic: "/market/ticker:BTC-USDT",  // topic for ticker of BTC-USDT
+    privateChannel: false,
+    response: true
+  };
+  ws.send(JSON.stringify(subMsg));
+});
+
+ws.on('message', (data) => {
+  const msg = JSON.parse(data);
+  console.log(msg);
+  // The message will contain topic, subject, and data fields for the ticker.
+});
+```
+
+In this snippet, after connecting (using the URL with the token), we send a JSON message with `type: "subscribe"` and the topic. KuCoin’s topics are prefixed by product and channel, e.g. `"/market/ticker:BTC-USDT"` subscribes to the ticker for that symbol. The server will start sending messages like `{"topic":"/market/ticker:BTC-USDT","data":{...}}` containing price, volume, etc.
+
+You can subscribe to multiple symbols by comma-separating them in the topic (e.g. `"/market/ticker:BTC-USDT,BTC-USDC"`), or by sending additional subscribe messages. Keep an eye on the `id` or `response` fields if you need to confirm subscription acknowledgement.
+
+### Private Channels (Orders and Accounts)
+
+For private data (such as order events or balance updates), KuCoin requires a similar token process but using the *private* bullet endpoint. You must also include authentication details (API key, passphrase, etc.) when connecting or in the subscription message. KuCoin’s private topics (like `/account/balance` or order updates) require the WebSocket connection to be authenticated. Typically, the token response for private will include an **encrypted** `token` that you use, and you must set `privateChannel: true` in your subscribe message. Due to the complexity, many developers use KuCoin’s provided SDKs or the official guidelines.
+
+For example, after getting a private token and connecting, a subscription to your order updates might look like:
+
+```js
+// Assuming wsPrivate is an authenticated WebSocket connection for private channels
+wsPrivate.send(JSON.stringify({
+  type: "subscribe",
+  topic: "/spot/tradeOrders",   // hypothetical topic for your spot trade order updates
+  privateChannel: true,
+  response: true
+}));
+```
+
+KuCoin would then push messages whenever your orders are executed or status changes. (Refer to KuCoin’s docs for the exact topic paths; e.g. `/spot/tradeOrders` or futures equivalents, and ensure your subscribe message includes the required signature headers if any. The **KuCoin API docs** outline the needed HMAC signature in the connection URL for private channels.)
+
+*Note:* KuCoin’s WebSocket sends periodic ping frames and expects a pong; you should handle these to keep the connection alive. The welcome message will contain a `pingInterval` value (e.g., 18000 ms) after which you should respond with a pong or send a heartbeat to avoid disconnection.
+
+## Bybit WebSocket API
+
+Bybit’s API (v5) unifies Spot, Derivatives (Inverse and Linear perpetuals/futures), and Options under a common structure. Bybit uses distinct WebSocket endpoints for different categories of public market data, for example:
+
+* **Spot public:** `wss://stream.bybit.com/v5/public/spot`
+* **Linear contracts (USDT perpetual/futures):** `wss://stream.bybit.com/v5/public/linear`
+* **Inverse contracts:** `wss://stream.bybit.com/v5/public/inverse`
+* (Testnet endpoints exist with a similar pattern on `stream-testnet` domains.)
+
+Public channels (market data) require no auth; private streams (such as user orders) require authentication via an `op: "auth"` message using your API key and a signature.
+
+### Spot Market Data Subscription Example
+
+Below is a Node.js example connecting to Bybit’s spot public stream and subscribing to two topics: the public trades feed and the Level-1 orderbook for BTCUSDT. The subscription format uses an array of topic strings in the `args` field of the request:
+
+```js
+const WebSocket = require('ws');
+const ws = new WebSocket('wss://stream.bybit.com/v5/public/spot');
+
+ws.on('open', () => {
+  // Subscribe to BTCUSDT public trade stream and orderbook (depth 1) stream
+  const subscribeReq = {
+    op: "subscribe",
+    args: [
+      "publicTrade.BTCUSDT",    // real-time trades for BTCUSDT
+      "orderbook.1.BTCUSDT"     // full order book (level 1) for BTCUSDT
+    ]
+  };
+  ws.send(JSON.stringify(subscribeReq));
+});
+
+ws.on('message', (data) => {
+  const msg = JSON.parse(data);
+  if (msg.topic) {
+    console.log(`Bybit message on topic ${msg.topic}:`, msg.data);
+  } else {
+    console.log(msg);
+  }
+});
+```
+
+This will print updates for every trade (`publicTrade.BTCUSDT`) and order book change (`orderbook.1.BTCUSDT`). Bybit’s topics are strings combining the data type and instrument. For example, `"publicTrade.BTCUSDT"` is the trades stream and `"orderbook.1.BTCUSDT"` is the order book at 1-depth (you can also subscribe to deeper order book snapshots, e.g. `orderbook.50.BTCUSDT` for 50 levels). Ticker data would be under a `tickers` topic (e.g. `"tickers.BTCUSDT"`). The Bybit server will respond with a subscription confirmation (`{"success": true, "op": "subscribe", ...}`), and then start sending messages with `topic` and `data`.
+
+### Private WebSocket (Authentication and User Streams)
+
+For Bybit’s private WebSocket (user data), you must authenticate after connecting to the private endpoint (`wss://stream.bybit.com/v5/private` for unified account, or the appropriate URL for your account type). Authentication is done by sending an `{"op":"auth","args":[apiKey, expires, signature]}` message. The `signature` is a HEX digest (not base64 in this case) of an HMAC SHA256 on a string composed of e.g. `GET/realtime` + expires (for v5 this may differ; check Bybit’s latest docs). Upon successful auth, you will get a response with `op: "auth", success: true`.
+
+After logging in, you can subscribe to private topics. Bybit’s private topics include order events, position updates, wallet balance changes, etc. For example, to subscribe to your account’s order updates on spot, you might send:
+
+```js
+wsPrivate.send(JSON.stringify({
+  op: "subscribe",
+  args: ["order", "stopOrder"]  // subscribe to active order and stop order updates (example)
+}));
+```
+
+(Actual topic strings for private feeds should be verified from Bybit’s documentation; they often look like `"order"`, `"execution"`, `"position"` for derivatives, etc., without symbol since they apply to your whole account.)
+
+**Bybit Ping/Pong:** Bybit requires ping messages to keep the connection alive. You should send `{"op":"ping"}` every 20 seconds (as recommended); the server will respond with a `pong` message indicating the connection is alive.
+
+## Bitget WebSocket API
+
+Bitget provides WebSocket streams for all its markets: spot, margin, futures (USDT-M, coin-M), etc., using a unified API. The base WebSocket endpoint is `wss://ws.bitget.com/mix/v1/stream` for their unified **Mix** service. Once connected, you can subscribe to public channels (market data) and, if needed, authenticate and subscribe to private channels (user data). Bitget’s subscription model uses an `op` field with values like `"subscribe"`/`"unsubscribe"` and an `args` list containing objects with `instType`, `channel`, and `instId` (instrument) identifiers.
+
+### Example: Login and Subscribe (Spot Ticker)
+
+Below is a **JavaScript example** that connects to Bitget’s WebSocket, performs authentication (for private access), then subscribes to a public ticker channel for BTCUSDT. This example uses Node's crypto library to create the required signature. Bitget’s login requires an HMAC SHA256 signature of the string `<timestamp>GET/user/verify` (note timestamp is in seconds) encoded in Base64. We then send a login message and, upon success, a subscribe message:
+
+```js
+const WebSocket = require('ws');
+const crypto = require('crypto');
+
+// Your API credentials
+const apiKey = 'YOUR_API_KEY';
+const secretKey = 'YOUR_API_SECRET';
+const passphrase = 'YOUR_PASSPHRASE';
+
+// Prepare authentication params
+const timestamp = Math.floor(Date.now() / 1000).toString();  // seconds
+const method = 'GET';
+const requestPath = '/user/verify';
+const prehash = timestamp + method + requestPath;
+const signature = crypto.createHmac('sha256', secretKey).update(prehash).digest('base64');
+
+const ws = new WebSocket('wss://ws.bitget.com/mix/v1/stream');
+
+ws.on('open', () => {
+  // 1. Send login (auth) request
+  const authMsg = {
+    op: "login",
+    args: [{
+      apiKey: apiKey,
+      passphrase: passphrase,
+      timestamp: timestamp,
+      sign: signature
+    }]
+  };
+  ws.send(JSON.stringify(authMsg));
+
+  // 2. Subscribe to BTCUSDT spot ticker after auth (or for public-only, this can be sent immediately)
+  const subMsg = {
+    op: "subscribe",
+    args: [{
+      instType: "SPOT",     // instrument type: SPOT market
+      channel: "ticker",    // subscribe to ticker channel
+      instId: "BTCUSDT"     // instrument ID (trading pair symbol)
+    }]
+  };
+  ws.send(JSON.stringify(subMsg));
+});
+
+ws.on('message', (data) => {
+  console.log(`Received: ${data}`);
+});
+```
+
+In this snippet, we first calculate the signature as per Bitget’s requirements (timestamp + "GET" + "/user/verify", HMAC-SHA256, Base64). Then we open the WebSocket to Bitget. On open, we send a `"login"` message with our API credentials. Once logged in (the server will respond with an event `"login"` and code 0 for success), we send a `"subscribe"` request for the **spot ticker** channel of BTCUSDT. The `instType` field specifies the market type (here `"SPOT"`; other values could be `"MARGIN"`, `"USDT-FUTURES"` for futures, etc. as documented), and `channel` is the data type (ticker, trades, candlesticks, etc.). After subscribing, the server will stream ticker updates for BTCUSDT (price, bid/ask, 24h change, etc.) every 100-300ms as per Bitget’s ticker channel spec.
+
+For subscribing to other data, you can adjust `channel` and `instType`. For example, to get futures trades, you might use `instType: "USDT-FUTURES"` and `channel: "trade"` with an appropriate `instId` (contract symbol). The process (login then subscribe) remains the same. If only public data is needed, the `login` step can be skipped – you can connect and subscribe to public channels without authentication.
+
+**Note:** Bitget enforces limits like max 10 messages per second and recommends subscribing to at most 50 channels per connection for stability. Also, Bitget expects heartbeat pings; if you receive a `ping` (often just a `"ping"` string), respond with a `"pong"` to keep the connection alive.
+
+---
+
+**Conclusion:** Each of these exchanges provides robust WebSocket APIs for getting real-time market data and user account updates. The general pattern is: **connect to the appropriate WebSocket endpoint, then send a subscription or authentication message as needed**. Spot vs. derivatives are often separated by endpoint or parameters (as shown for each exchange). By using the above examples as a starting point – and adjusting for the specific channels or symbols you need – you can stream live crypto market data and trading updates from Binance, OKX, KuCoin, Bybit, and Bitget. Always refer to the latest official documentation for each exchange (linked in citations) for detailed parameters, as APIs are updated frequently.
+
+**Sources:**
+
+* Binance WebSocket API – Binance Academy & Official Docs
+* OKX WebSocket v5 – Official Guide and API Reference
+* KuCoin WebSocket API – Official Documentation & StackOverflow example
+* Bybit WebSocket API v5 – Official Docs (GitHub)
+* Bitget WebSocket API – Official Docs & Integration Guide

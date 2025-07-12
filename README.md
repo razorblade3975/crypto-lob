@@ -53,11 +53,31 @@ A high-performance cryptocurrency market data provider system designed for ultra
 
 ### Build Instructions
 
+#### Docker Development (Recommended)
+
 ```bash
 # Clone the repository
 git clone https://github.com/razorblade3975/crypto-lob.git
 cd crypto-lob
 
+# Build and start development container
+docker compose up -d crypto-lob-dev
+
+# Enter the container and build
+docker exec -it crypto-lob-dev bash
+cd /workspace
+./scripts/build.sh -t Release  # Or use -t Debug -s ASAN for debugging
+
+# Run tests
+cd build && ctest -V
+
+# Run benchmarks
+./crypto-lob-benchmarks
+```
+
+#### Native Build (Linux)
+
+```bash
 # Install dependencies with Conan 2
 conan install . --output-folder=build --build=missing \
       -s compiler=clang -s compiler.version=17 \
@@ -111,6 +131,16 @@ websocket_url = "wss://ws.okx.com:8443"
 #include "core/price.hpp"
 #include "core/spsc_ring.hpp"
 
+// Order struct must be aligned for memory pool usage
+struct alignas(64) Order {
+    uint64_t order_id;
+    uint64_t instrument_id;
+    Price price;
+    uint64_t quantity;
+    uint64_t timestamp;
+    // ... padding to ensure 64+ bytes total size
+};
+
 int main() {
     // Initialize memory pool for orders
     MemoryPool<Order> pool(10000);
@@ -123,7 +153,7 @@ int main() {
     auto worker = [&pool, &stop_flag]() {
         while (!stop_flag.load()) {
             // Allocate orders from thread-local cache
-            auto order = pool.construct(order_id, price, quantity);
+            auto* order = pool.construct(order_id, price, quantity);
             // Process order...
             pool.destroy(order);
         }
@@ -171,16 +201,25 @@ numactl --cpubind=0 --membind=0 ./crypto-lob
 ## 🧪 Testing
 
 ```bash
-# Unit tests
-ctest --output-on-failure
+# Unit tests (use build script for best results)
+./scripts/build.sh -t Debug -r  # Build and run tests
 
-# Memory safety with Valgrind
-valgrind --tool=memcheck ./crypto-lob-tests
+# Memory safety with AddressSanitizer
+./scripts/build.sh -t Debug -s ASAN -r
 
-# Performance profiling
-perf record ./crypto-lob-benchmarks
+# Thread safety with ThreadSanitizer  
+./scripts/build.sh -t Debug -s TSAN -r
+
+# Performance profiling (requires Linux perf tools)
+perf record ./build/crypto-lob-benchmarks
 perf report
+
+# Valgrind memory check (optional, slower than ASAN)
+valgrind --tool=memcheck ./build/crypto-lob-tests
 ```
+
+### CI/CD Status
+[![CI](https://github.com/razorblade3975/crypto-lob/actions/workflows/ci.yml/badge.svg)](https://github.com/razorblade3975/crypto-lob/actions/workflows/ci.yml)
 
 ## 📈 Development Status
 
@@ -189,6 +228,7 @@ perf report
   - Fixed critical thread-local cache design flaw (July 2025)
   - Implemented intrusive linked list for proper cache management
   - One cache per thread per pool with automatic cleanup
+  - Fixed alignment requirements for benchmark compatibility
 - [x] Fixed-point price arithmetic with adaptive precision (128-bit)
 - [x] Cache alignment infrastructure with centralized constants
 - [x] Wait-free SPSC ring buffer using Disruptor pattern
@@ -199,6 +239,10 @@ perf report
   - Comprehensive test suite with fuzz testing
 - [x] Build system and project structure
 - [x] Docker development environment
+- [x] CI/CD pipeline with comprehensive testing
+  - Multi-configuration builds (Debug/Release, ASAN/TSAN)
+  - Automated code formatting checks
+  - Cross-platform compatibility (via Docker)
 - [x] Comprehensive documentation
 
 ### 🚧 Next Steps (4-Week Implementation Plan)
