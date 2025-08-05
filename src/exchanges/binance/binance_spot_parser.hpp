@@ -1,0 +1,672 @@
+#pragma once
+
+#include <chrono>
+#include <cmath>
+#include <string_view>
+
+#include "../../core/enums.hpp"
+#include "../../exchange/message_types.hpp"
+#include "../../parsing/base_parser.hpp"
+
+namespace crypto_lob::exchanges::binance {
+
+// Forward declaration for CRTP
+class BinanceSpotParser;
+
+}  // namespace crypto_lob::exchanges::binance
+
+// Specialize ParserTraits for BinanceSpotParser
+template <>
+struct crypto_lob::parsing::ParserTraits<crypto_lob::exchanges::binance::BinanceSpotParser> {
+    static constexpr crypto_lob::core::ExchangeId exchange_id = crypto_lob::core::ExchangeId::BINANCE_SPOT;
+    static constexpr bool supports_checksum = false;
+};
+
+namespace crypto_lob::exchanges::binance {
+
+using namespace crypto_lob::parsing;
+using namespace crypto_lob::exchange;
+using namespace crypto_lob::core;
+
+/**
+ * High-performance Binance Spot WebSocket JSON parser
+ *
+ * Supports WebSocket streams:
+ * - Depth updates (symbol@depth)
+ * - Aggregate trades (symbol@aggTrade)
+ * - Individual trades (symbol@trade)
+ * - Book ticker (symbol@bookTicker)
+ *
+ * Optimized for HFT with:
+ * - Zero-allocation parsing using memory pool
+ * - Thread-local simdjson parser reuse
+ * - Precise decimal string to uint64_t conversion
+ * - Minimal string copies via string_view
+ */
+class BinanceSpotParser : public ParserBase<BinanceSpotParser> {
+  public:
+    explicit BinanceSpotParser(Pool& message_pool) noexcept : ParserBase(message_pool) {}
+
+    // Required CRTP implementations
+
+    /**
+     * Parse snapshot messages from WebSocket depth stream
+     * Message format: depth@symbol with lastUpdateId, bids[], asks[]
+     */
+    [[nodiscard]] MessagePtr parse_snapshot_impl(std::string_view json_data,
+                                                 const std::string& symbol,
+                                                 Timestamp receive_time,
+                                                 ParseErrorInfo* error_out = nullptr) noexcept {
+        auto msg_guard = allocate_message();
+        if (!msg_guard) {
+            set_error(error_out, ParseError::BUFFER_TOO_SMALL);
+            return nullptr;
+        }
+
+        try {
+            auto& parser = get_parser();
+            auto padded = simdjson::padded_string(json_data);
+            auto doc_result = parser.iterate(padded);
+            if (doc_result.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return nullptr;
+            }
+
+            auto* msg = msg_guard.get();
+            initialize_header(*msg, MessageType::SNAPSHOT, symbol, receive_time);
+
+            // Parse lastUpdateId for snapshot
+            uint64_t last_update_id;
+            if (!find_and_parse_uint64(json_data, "lastUpdateId", last_update_id, error_out)) {
+                return nullptr;
+            }
+            msg->header.exchange_sequence = last_update_id;
+
+            // Parse bids and asks arrays
+            if (!parse_price_levels_from_json(json_data, "bids", msg->bids.data(), msg->header.bid_count, error_out) ||
+                !parse_price_levels_from_json(json_data, "asks", msg->asks.data(), msg->header.ask_count, error_out)) {
+                return nullptr;
+            }
+
+            return msg_guard.release();
+
+        } catch (...) {
+            set_error(error_out, ParseError::INVALID_JSON);
+            return nullptr;
+        }
+    }
+
+    /**
+     * Parse update messages from various WebSocket streams
+     * Dispatches based on event type field
+     */
+    [[nodiscard]] MessagePtr parse_update_impl(std::string_view json_data,
+                                               const std::string& symbol,
+                                               Timestamp receive_time,
+                                               ParseErrorInfo* error_out = nullptr) noexcept {
+        try {
+            // Try to parse as JSON first
+            auto& parser = get_parser();
+            auto padded = simdjson::padded_string(json_data);
+            auto doc_result = parser.iterate(padded);
+            if (doc_result.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return nullptr;
+            }
+
+            // Detect message type by checking for event field
+            std::string event_type;
+            if (find_string_field(json_data, "e", event_type)) {
+                // Has event field - dispatch based on type
+                if (event_type == "depthUpdate") {
+                    return parse_depth_update(json_data, symbol, receive_time, error_out);
+                } else if (event_type == "aggTrade") {
+                    return parse_agg_trade(json_data, symbol, receive_time, error_out);
+                } else if (event_type == "trade") {
+                    return parse_trade(json_data, symbol, receive_time, error_out);
+                } else if (event_type == "bookTicker") {
+                    return parse_book_ticker(json_data, symbol, receive_time, error_out);
+                } else {
+                    set_error(error_out, ParseError::UNSUPPORTED_MESSAGE_TYPE);
+                    return nullptr;
+                }
+            } else {
+                // No event field - check if it's bookTicker (spot) which omits "e"
+                uint64_t dummy;
+                if (find_and_parse_uint64(json_data, "u", dummy, nullptr) &&
+                    find_string_field(json_data, "b", event_type) &&  // reuse variable for price check
+                    find_string_field(json_data, "a", event_type)) {
+                    return parse_book_ticker(json_data, symbol, receive_time, error_out);
+                }
+
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return nullptr;
+            }
+
+        } catch (...) {
+            set_error(error_out, ParseError::INVALID_JSON);
+            return nullptr;
+        }
+    }
+
+    /**
+     * Parse quantity string to scaled uint64_t
+     * Uses 10^9 scaling factor for consistency with Price class
+     */
+    [[nodiscard]] bool parse_quantity_string(std::string_view qty_str,
+                                             uint64_t& result_out,
+                                             ParseErrorInfo* error_out = nullptr) const noexcept {
+        if (qty_str.empty()) {
+            set_error(error_out, ParseError::INVALID_QUANTITY_FORMAT);
+            return false;
+        }
+
+        // Find decimal point position
+        size_t decimal_pos = qty_str.find('.');
+
+        // Extract integer part
+        std::string_view integer_part;
+        std::string_view fractional_part;
+
+        if (decimal_pos == std::string_view::npos) {
+            // No decimal point - entire string is integer
+            integer_part = qty_str;
+            fractional_part = "";
+        } else {
+            integer_part = qty_str.substr(0, decimal_pos);
+            fractional_part = qty_str.substr(decimal_pos + 1);
+        }
+
+        // Validate characters
+        for (char c : integer_part) {
+            if (c < '0' || c > '9') {
+                set_error(error_out, ParseError::INVALID_QUANTITY_FORMAT);
+                return false;
+            }
+        }
+        for (char c : fractional_part) {
+            if (c < '0' || c > '9') {
+                set_error(error_out, ParseError::INVALID_QUANTITY_FORMAT);
+                return false;
+            }
+        }
+
+        // Parse integer part
+        uint64_t integer_value = 0;
+        for (char c : integer_part) {
+            if (integer_value > (UINT64_MAX - (c - '0')) / 10) {
+                set_error(error_out, ParseError::NUMERIC_OVERFLOW);
+                return false;
+            }
+            integer_value = integer_value * 10 + (c - '0');
+        }
+
+        // Parse fractional part with 10^9 scaling
+        uint64_t fractional_value = 0;
+        uint64_t scale = 1;
+        constexpr uint64_t SCALE_FACTOR = 1'000'000'000ULL;  // 10^9
+
+        for (size_t i = 0; i < fractional_part.size() && i < 9; ++i) {
+            scale *= 10;
+            fractional_value = fractional_value * 10 + (fractional_part[i] - '0');
+        }
+
+        // Scale fractional part to 10^9
+        while (scale < SCALE_FACTOR) {
+            fractional_value *= 10;
+            scale *= 10;
+        }
+
+        // Check for overflow in final calculation
+        if (integer_value > (UINT64_MAX - fractional_value) / SCALE_FACTOR) {
+            set_error(error_out, ParseError::NUMERIC_OVERFLOW);
+            return false;
+        }
+
+        result_out = integer_value * SCALE_FACTOR + fractional_value;
+        return true;
+    }
+
+  private:
+    void initialize_header(MarketDataMessage& msg,
+                           MessageType type,
+                           const std::string& /* symbol */,
+                           Timestamp receive_time) noexcept {
+        msg.header = MessageHeader{};  // Zero-initialize
+        msg.header.type = type;
+        msg.header.exchange_id = ExchangeId::BINANCE_SPOT;
+        msg.header.local_timestamp = receive_time;
+        msg.header.exchange_timestamp =
+            std::chrono::duration_cast<Timestamp>(std::chrono::system_clock::now().time_since_epoch());
+    }
+
+    // Helper to find and parse uint64 field without simdjson ondemand issues
+    bool find_and_parse_uint64(std::string_view json_data,
+                               const char* field_name,
+                               uint64_t& result,
+                               ParseErrorInfo* error_out) const noexcept {
+        try {
+            auto& parser = get_parser();
+            auto padded = simdjson::padded_string(json_data);
+            auto doc_result = parser.iterate(padded);
+            if (doc_result.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return false;
+            }
+
+            auto field = doc_result.find_field(field_name);
+            if (field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+
+            auto value_result = field.get_uint64();
+            if (value_result.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+
+            result = value_result.value();
+            return true;
+        } catch (...) {
+            set_error(error_out, ParseError::INVALID_JSON);
+            return false;
+        }
+    }
+
+    // Helper to find string field
+    bool find_string_field(std::string_view json_data, const char* field_name, std::string& result) const noexcept {
+        try {
+            auto& parser = get_parser();
+            auto padded = simdjson::padded_string(json_data);
+            auto doc_result = parser.iterate(padded);
+            if (doc_result.error())
+                return false;
+
+            auto field = doc_result.find_field(field_name);
+            if (field.error())
+                return false;
+
+            auto str_result = field.get_string();
+            if (str_result.error())
+                return false;
+
+            result = std::string(str_result.value());
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    // Parse price levels from JSON using separate parsing pass
+    bool parse_price_levels_from_json(std::string_view json_data,
+                                      const char* field_name,
+                                      PriceLevel* levels,
+                                      uint16_t& count_out,
+                                      ParseErrorInfo* error_out) const noexcept {
+        try {
+            auto& parser = get_parser();
+            auto padded = simdjson::padded_string(json_data);
+            auto doc_result = parser.iterate(padded);
+            if (doc_result.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return false;
+            }
+
+            auto levels_field = doc_result.find_field(field_name);
+            if (levels_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+
+            auto levels_array = levels_field.get_array();
+            if (levels_array.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+
+            size_t level_count = 0;
+            for (auto level_item : levels_array.value()) {
+                if (level_count >= MAX_LEVELS_PER_MESSAGE)
+                    break;
+
+                auto level_array = level_item.get_array();
+                if (level_array.error()) {
+                    set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                    return false;
+                }
+
+                auto iter = level_array.value().begin();
+
+                // Parse price (first element)
+                if (iter == level_array.value().end()) {
+                    set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                    return false;
+                }
+
+                auto price_str = (*iter).get_string();
+                if (price_str.error()) {
+                    set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                    return false;
+                }
+
+                if (!parse_price_string(price_str.value(), levels[level_count].price, error_out)) {
+                    return false;
+                }
+                ++iter;
+
+                // Parse quantity (second element)
+                if (iter == level_array.value().end()) {
+                    set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                    return false;
+                }
+
+                auto qty_str = (*iter).get_string();
+                if (qty_str.error()) {
+                    set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                    return false;
+                }
+
+                if (!parse_quantity_string(qty_str.value(), levels[level_count].quantity, error_out)) {
+                    return false;
+                }
+
+                level_count++;
+            }
+
+            count_out = static_cast<uint16_t>(level_count);
+            return true;
+        } catch (...) {
+            set_error(error_out, ParseError::INVALID_JSON);
+            return false;
+        }
+    }
+
+    [[nodiscard]] MessagePtr parse_depth_update(std::string_view json_data,
+                                                const std::string& symbol,
+                                                Timestamp receive_time,
+                                                ParseErrorInfo* error_out) noexcept {
+        auto msg_guard = allocate_message();
+        if (!msg_guard) {
+            set_error(error_out, ParseError::BUFFER_TOO_SMALL);
+            return nullptr;
+        }
+
+        auto* msg = msg_guard.get();
+        initialize_header(*msg, MessageType::DELTA, symbol, receive_time);
+
+        // Parse sequence IDs (U, u)
+        uint64_t first_update_id, last_update_id;
+        if (!find_and_parse_uint64(json_data, "U", first_update_id, error_out) ||
+            !find_and_parse_uint64(json_data, "u", last_update_id, error_out)) {
+            return nullptr;
+        }
+        msg->header.exchange_sequence = last_update_id;
+
+        // Parse event time (E) - optional
+        uint64_t event_time_ms;
+        if (find_and_parse_uint64(json_data, "E", event_time_ms, nullptr)) {
+            msg->header.exchange_timestamp = timestamp_from_millis(static_cast<int64_t>(event_time_ms));
+        }
+
+        // Parse bids and asks
+        if (!parse_price_levels_from_json(json_data, "b", msg->bids.data(), msg->header.bid_count, error_out) ||
+            !parse_price_levels_from_json(json_data, "a", msg->asks.data(), msg->header.ask_count, error_out)) {
+            return nullptr;
+        }
+
+        return msg_guard.release();
+    }
+
+    [[nodiscard]] MessagePtr parse_agg_trade(std::string_view json_data,
+                                             const std::string& symbol,
+                                             Timestamp receive_time,
+                                             ParseErrorInfo* error_out) noexcept {
+        auto msg_guard = allocate_message();
+        if (!msg_guard) {
+            set_error(error_out, ParseError::BUFFER_TOO_SMALL);
+            return nullptr;
+        }
+
+        auto* msg = msg_guard.get();
+        initialize_header(*msg, MessageType::TRADE, symbol, receive_time);
+
+        // Parse aggregate trade ID (a)
+        uint64_t trade_id;
+        if (!find_and_parse_uint64(json_data, "a", trade_id, error_out)) {
+            return nullptr;
+        }
+        msg->header.exchange_sequence = trade_id;
+
+        // Parse trade time (T) - optional
+        uint64_t trade_time_ms;
+        if (find_and_parse_uint64(json_data, "T", trade_time_ms, nullptr)) {
+            msg->header.exchange_timestamp = timestamp_from_millis(static_cast<int64_t>(trade_time_ms));
+        }
+
+        // Parse price and quantity
+        if (!parse_trade_price_qty(json_data, msg->bids[0], error_out)) {
+            return nullptr;
+        }
+
+        msg->header.bid_count = 1;
+        msg->header.ask_count = 0;
+
+        return msg_guard.release();
+    }
+
+    [[nodiscard]] MessagePtr parse_trade(std::string_view json_data,
+                                         const std::string& symbol,
+                                         Timestamp receive_time,
+                                         ParseErrorInfo* error_out) noexcept {
+        auto msg_guard = allocate_message();
+        if (!msg_guard) {
+            set_error(error_out, ParseError::BUFFER_TOO_SMALL);
+            return nullptr;
+        }
+
+        auto* msg = msg_guard.get();
+        initialize_header(*msg, MessageType::TRADE, symbol, receive_time);
+
+        // Parse trade ID (t)
+        uint64_t trade_id;
+        if (!find_and_parse_uint64(json_data, "t", trade_id, error_out)) {
+            return nullptr;
+        }
+        msg->header.exchange_sequence = trade_id;
+
+        // Parse trade time (T) - optional
+        uint64_t trade_time_ms;
+        if (find_and_parse_uint64(json_data, "T", trade_time_ms, nullptr)) {
+            msg->header.exchange_timestamp = timestamp_from_millis(static_cast<int64_t>(trade_time_ms));
+        }
+
+        // Parse price and quantity
+        if (!parse_trade_price_qty(json_data, msg->bids[0], error_out)) {
+            return nullptr;
+        }
+
+        msg->header.bid_count = 1;
+        msg->header.ask_count = 0;
+
+        return msg_guard.release();
+    }
+
+    [[nodiscard]] MessagePtr parse_book_ticker(std::string_view json_data,
+                                               const std::string& symbol,
+                                               Timestamp receive_time,
+                                               ParseErrorInfo* error_out) noexcept {
+        auto msg_guard = allocate_message();
+        if (!msg_guard) {
+            set_error(error_out, ParseError::BUFFER_TOO_SMALL);
+            return nullptr;
+        }
+
+        auto* msg = msg_guard.get();
+        initialize_header(*msg, MessageType::TICKER, symbol, receive_time);
+
+        // Parse update ID (u)
+        uint64_t update_id;
+        if (!find_and_parse_uint64(json_data, "u", update_id, error_out)) {
+            return nullptr;
+        }
+        msg->header.exchange_sequence = update_id;
+
+        // Parse best bid and ask
+        if (!parse_book_ticker_levels(json_data, msg->bids[0], msg->asks[0], error_out)) {
+            return nullptr;
+        }
+
+        msg->header.bid_count = 1;
+        msg->header.ask_count = 1;
+
+        return msg_guard.release();
+    }
+
+    // Helper to parse price and quantity for trades
+    bool parse_trade_price_qty(std::string_view json_data,
+                               PriceLevel& level,
+                               ParseErrorInfo* error_out) const noexcept {
+        try {
+            auto& parser = get_parser();
+            auto padded = simdjson::padded_string(json_data);
+            auto doc_result = parser.iterate(padded);
+            if (doc_result.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return false;
+            }
+
+            // Parse price
+            auto price_field = doc_result.find_field("p");
+            if (price_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+            auto price_str = price_field.get_string();
+            if (price_str.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+            if (!parse_price_string(price_str.value(), level.price, error_out)) {
+                return false;
+            }
+
+            // Need to restart parsing for quantity
+            auto padded2 = simdjson::padded_string(json_data);
+            auto doc_result2 = parser.iterate(padded2);
+            if (doc_result2.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return false;
+            }
+
+            // Parse quantity
+            auto qty_field = doc_result2.find_field("q");
+            if (qty_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+            auto qty_str = qty_field.get_string();
+            if (qty_str.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+            if (!parse_quantity_string(qty_str.value(), level.quantity, error_out)) {
+                return false;
+            }
+
+            return true;
+        } catch (...) {
+            set_error(error_out, ParseError::INVALID_JSON);
+            return false;
+        }
+    }
+
+    // Helper to parse book ticker bid/ask levels
+    bool parse_book_ticker_levels(std::string_view json_data,
+                                  PriceLevel& bid_level,
+                                  PriceLevel& ask_level,
+                                  ParseErrorInfo* error_out) const noexcept {
+        try {
+            auto& parser = get_parser();
+
+            // Parse bid price (b)
+            auto padded1 = simdjson::padded_string(json_data);
+            auto doc1 = parser.iterate(padded1);
+            if (doc1.error()) {
+                set_error(error_out, ParseError::INVALID_JSON);
+                return false;
+            }
+            auto bid_price_field = doc1.find_field("b");
+            if (bid_price_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+            auto bid_price_str = bid_price_field.get_string();
+            if (bid_price_str.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+            if (!parse_price_string(bid_price_str.value(), bid_level.price, error_out)) {
+                return false;
+            }
+
+            // Parse bid quantity (B)
+            auto padded2 = simdjson::padded_string(json_data);
+            auto doc2 = parser.iterate(padded2);
+            auto bid_qty_field = doc2.find_field("B");
+            if (bid_qty_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+            auto bid_qty_str = bid_qty_field.get_string();
+            if (bid_qty_str.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+            if (!parse_quantity_string(bid_qty_str.value(), bid_level.quantity, error_out)) {
+                return false;
+            }
+
+            // Parse ask price (a)
+            auto padded3 = simdjson::padded_string(json_data);
+            auto doc3 = parser.iterate(padded3);
+            auto ask_price_field = doc3.find_field("a");
+            if (ask_price_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+            auto ask_price_str = ask_price_field.get_string();
+            if (ask_price_str.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+            if (!parse_price_string(ask_price_str.value(), ask_level.price, error_out)) {
+                return false;
+            }
+
+            // Parse ask quantity (A)
+            auto padded4 = simdjson::padded_string(json_data);
+            auto doc4 = parser.iterate(padded4);
+            auto ask_qty_field = doc4.find_field("A");
+            if (ask_qty_field.error()) {
+                set_error(error_out, ParseError::MISSING_REQUIRED_FIELD);
+                return false;
+            }
+            auto ask_qty_str = ask_qty_field.get_string();
+            if (ask_qty_str.error()) {
+                set_error(error_out, ParseError::INVALID_FIELD_TYPE);
+                return false;
+            }
+            if (!parse_quantity_string(ask_qty_str.value(), ask_level.quantity, error_out)) {
+                return false;
+            }
+
+            return true;
+        } catch (...) {
+            set_error(error_out, ParseError::INVALID_JSON);
+            return false;
+        }
+    }
+};
+
+}  // namespace crypto_lob::exchanges::binance
