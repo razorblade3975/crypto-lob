@@ -18,6 +18,7 @@ enum class ExchangeId : uint8_t {
     KUCOIN_FUT = 5,
     OKX_SPOT = 6,
     OKX_FUT = 7,
+    UNKNOWN = 255  // Sentinel value for unspecialized parsers
 };
 
 // Market side
