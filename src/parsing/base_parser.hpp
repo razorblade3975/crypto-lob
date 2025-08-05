@@ -127,7 +127,15 @@ class ParserBase {
     // RAII wrapper for safe message allocation
     class MessageGuard {
       public:
-        MessageGuard(Pool& pool) noexcept : pool_(pool), ptr_(pool.construct()) {}
+        MessageGuard(Pool& pool) noexcept : pool_(pool), ptr_(nullptr) {
+            try {
+                ptr_ = pool.construct();
+            } catch (const std::bad_alloc&) {
+                // Gracefully handle memory pool exhaustion by leaving ptr_ as nullptr
+                // This allows the parser to check (!msg_guard) and return BUFFER_TOO_SMALL error
+                ptr_ = nullptr;
+            }
+        }
         ~MessageGuard() {
             if (ptr_)
                 pool_.destroy(ptr_);

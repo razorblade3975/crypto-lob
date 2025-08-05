@@ -451,7 +451,8 @@ TEST_F(BinanceSpotParserTest, ParseQuantityOverflow) {
 
 TEST_F(BinanceSpotParserTest, MemoryPoolExhaustion) {
     // Create a small pool that will be exhausted
-    MemoryPool<MarketDataMessage> small_pool(2);
+    // Use THROW_EXCEPTION policy for tests to avoid terminating the process
+    MemoryPool<MarketDataMessage> small_pool(2, PoolDepletionPolicy::THROW_EXCEPTION);
     BinanceSpotParser small_parser(small_pool);
 
     const char* json = R"({
