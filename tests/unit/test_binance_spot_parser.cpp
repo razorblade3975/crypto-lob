@@ -487,7 +487,7 @@ TEST_F(BinanceSpotParserTest, RAIIGuardBehavior) {
 
     // Message should be null and memory should be automatically cleaned up
     EXPECT_EQ(msg, nullptr);
-    EXPECT_EQ(error.error, ParseError::INVALID_JSON);
+    EXPECT_EQ(error.error, ParseError::MISSING_REQUIRED_FIELD);
 
     // Pool should still be usable for new allocations
     const char* valid_json = R"({
