@@ -12,6 +12,33 @@
 
 namespace crypto_lob::core {
 
+/**
+ * SPSCRing - Single Producer Single Consumer Lock-Free Ring Buffer
+ *
+ * Part of a three-component memory management system:
+ * 1. SPSCRing: This component - lock-free thread communication (~20ns)
+ * 2. MemoryPool: Generic object pool with CAS operations (~200ns)
+ * 3. RawMessagePool: Thread-local WebSocket buffers (~100ns)
+ *
+ * Design Philosophy:
+ * - Wait-free operations (no locks, no spinning, no CAS)
+ * - Cache-line aligned slots prevent false sharing
+ * - Disruptor-style sequence numbers for correctness
+ * - Power-of-two capacity for fast modulo via bit masking
+ *
+ * Thread Safety:
+ * - ONLY safe for single producer, single consumer
+ * - Producer calls try_push() from one thread
+ * - Consumer calls try_pop() from another thread
+ * - size()/empty()/full() are eventually consistent
+ *
+ * Usage in Data Flow:
+ * Network Thread → SPSCRing<RawMessage*> → Parser Thread
+ * Parser Thread → SPSCRing<ParsedMessage*> → LOB Thread
+ *
+ * @see docs/architecture/memory_management.md for complete architecture
+ */
+
 // Always inline macro for hot path functions - using Clang-specific attribute
 #define ALWAYS_INLINE [[clang::always_inline]] inline
 

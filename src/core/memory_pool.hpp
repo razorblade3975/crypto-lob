@@ -24,6 +24,34 @@
 
 namespace crypto_lob::core {
 
+/**
+ * MemoryPool - Generic Lock-Free Object Pool for HFT
+ *
+ * Part of a three-component memory management system:
+ * 1. SPSCRing: Lock-free thread communication (~20ns)
+ * 2. MemoryPool: This component - generic object pool (~200ns)
+ * 3. RawMessagePool: Thread-local WebSocket buffers (~100ns)
+ *
+ * Design Philosophy:
+ * - Lock-free allocation/deallocation using CAS operations
+ * - Thread-local caching reduces contention
+ * - Handles complex objects with constructors/destructors
+ * - ABA-safe using 128-bit tagged pointers
+ * - Huge page support for TLB efficiency
+ *
+ * Key Differences from RawMessagePool:
+ * - Multi-threaded: Uses CAS for thread safety
+ * - Generic: Works with any type T
+ * - Complex objects: Handles construction/destruction
+ * - Higher overhead: ~200ns vs ~100ns for RawMessagePool
+ *
+ * Usage in Data Flow:
+ * Parser Thread uses MemoryPool<ParsedMessage> for parsed data
+ * LOB Thread uses MemoryPool<OrderUpdate> for order updates
+ *
+ * @see docs/architecture/memory_management.md for complete architecture
+ */
+
 // Fixed concept - removed trivially destructible requirement
 // Fix: Remove arbitrary size limit for HFT use cases (e.g., cache-aligned 2KB structs)
 template <typename T>
