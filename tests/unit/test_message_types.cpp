@@ -4,9 +4,9 @@
 
 #include <gtest/gtest.h>
 
-#include "exchange/message_types.hpp"
+#include "exchanges/base/message_types.hpp"
 
-using namespace crypto_lob::exchange;
+using namespace crypto_lob::exchanges::base;
 using namespace crypto_lob::core;
 
 class MessageTypesTest : public ::testing::Test {

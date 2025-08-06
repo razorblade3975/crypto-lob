@@ -6,16 +6,15 @@
 #include "core/enums.hpp"
 #include "core/price.hpp"
 #include "core/timestamp.hpp"
+#include "exchanges/base/message_types.hpp"
 #include "orderbook/order_book.hpp"
 #include "orderbook/price_level.hpp"
-
-#include "exchange/message_types.hpp"
 
 namespace crypto_lob::orderbook {
 
 // Type aliases for clarity between different PriceLevel types
-using ExchangePriceLevel = exchange::PriceLevel;  // From message types
-using CorePriceLevel = core::PriceLevel;          // For order book
+using ExchangePriceLevel = exchanges::base::PriceLevel;  // From message types
+using CorePriceLevel = core::PriceLevel;                 // For order book
 
 /**
  * HFT-optimized Order Book Synchronizer
@@ -57,8 +56,8 @@ class OrderBookSynchronizer {
         stats_.stale_messages = 0;
     }
 
-    [[nodiscard]] ProcessResult process_message(exchange::MarketDataMessage* msg) noexcept {
-        using exchange::MessageType;
+    [[nodiscard]] ProcessResult process_message(exchanges::base::MarketDataMessage* msg) noexcept {
+        using exchanges::base::MessageType;
 
         if (msg->header.type == MessageType::SNAPSHOT) {
             return process_snapshot(msg);
@@ -112,7 +111,7 @@ class OrderBookSynchronizer {
     // Statistics
     Statistics stats_;
 
-    [[nodiscard]] ProcessResult process_snapshot(exchange::MarketDataMessage* msg) noexcept {
+    [[nodiscard]] ProcessResult process_snapshot(exchanges::base::MarketDataMessage* msg) noexcept {
         // Convert exchange PriceLevels to core PriceLevels for OrderBook
         std::vector<CorePriceLevel> bid_levels;
         std::vector<CorePriceLevel> ask_levels;
@@ -166,7 +165,7 @@ class OrderBookSynchronizer {
         return {ProcessStatus::OK, top_changed};
     }
 
-    [[nodiscard]] ProcessResult process_delta(exchange::MarketDataMessage* msg) noexcept {
+    [[nodiscard]] ProcessResult process_delta(exchanges::base::MarketDataMessage* msg) noexcept {
         if (state_ == State::AWAITING_SNAPSHOT) {
             // Not synchronized yet, need snapshot first
             return {ProcessStatus::NEEDS_SNAPSHOT, false};
@@ -197,7 +196,7 @@ class OrderBookSynchronizer {
         return {ProcessStatus::OK, top_changed};
     }
 
-    [[nodiscard]] bool is_stale_message(const exchange::MarketDataMessage* msg) const noexcept {
+    [[nodiscard]] bool is_stale_message(const exchanges::base::MarketDataMessage* msg) const noexcept {
         switch (msg->header.exchange_id) {
             case core::ExchangeId::BINANCE_SPOT:
             case core::ExchangeId::BINANCE_FUT:
@@ -217,7 +216,7 @@ class OrderBookSynchronizer {
         }
     }
 
-    [[nodiscard]] bool is_sequence_continuous(const exchange::MarketDataMessage* msg) const noexcept {
+    [[nodiscard]] bool is_sequence_continuous(const exchanges::base::MarketDataMessage* msg) const noexcept {
         switch (msg->header.exchange_id) {
             case core::ExchangeId::BINANCE_SPOT:
             case core::ExchangeId::BINANCE_FUT:
@@ -245,7 +244,7 @@ class OrderBookSynchronizer {
         }
     }
 
-    void update_sequence_tracking(const exchange::MarketDataMessage* msg) noexcept {
+    void update_sequence_tracking(const exchanges::base::MarketDataMessage* msg) noexcept {
         switch (msg->header.exchange_id) {
             case core::ExchangeId::BINANCE_SPOT:
             case core::ExchangeId::BINANCE_FUT:
@@ -269,7 +268,7 @@ class OrderBookSynchronizer {
         }
     }
 
-    [[nodiscard]] bool apply_delta(exchange::MarketDataMessage* msg) noexcept {
+    [[nodiscard]] bool apply_delta(exchanges::base::MarketDataMessage* msg) noexcept {
         // Apply updates to order book
         bool top_changed = false;
 

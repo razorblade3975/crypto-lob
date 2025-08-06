@@ -5,13 +5,12 @@
 #include <gtest/gtest.h>
 
 #include "core/memory_pool.hpp"
+#include "exchanges/base/message_types.hpp"
 #include "exchanges/binance/binance_spot_parser.hpp"
-
-#include "exchange/message_types.hpp"
 
 using namespace crypto_lob::exchanges::binance;
 using namespace crypto_lob::parsing;
-using namespace crypto_lob::exchange;
+using namespace crypto_lob::exchanges::base;
 using crypto_lob::core::MemoryPool;  // Use specific import to avoid conflict
 
 class BinanceSpotParserTest : public ::testing::Test {
@@ -19,7 +18,7 @@ class BinanceSpotParserTest : public ::testing::Test {
     void SetUp() override {
         pool_ = std::make_unique<MemoryPool<MarketDataMessage>>(1000);
         parser_ = std::make_unique<BinanceSpotParser>(*pool_);
-        receive_time_ = std::chrono::duration_cast<crypto_lob::exchange::Timestamp>(
+        receive_time_ = std::chrono::duration_cast<crypto_lob::exchanges::base::Timestamp>(
             std::chrono::system_clock::now().time_since_epoch());
     }
 
@@ -30,7 +29,7 @@ class BinanceSpotParserTest : public ::testing::Test {
 
     std::unique_ptr<MemoryPool<MarketDataMessage>> pool_;
     std::unique_ptr<BinanceSpotParser> parser_;
-    crypto_lob::exchange::Timestamp receive_time_;
+    crypto_lob::exchanges::base::Timestamp receive_time_;
 };
 
 // ===============================

@@ -5,14 +5,14 @@
 
 #include "../../src/core/price.hpp"
 #include "../../src/core/timestamp.hpp"
-#include "../../src/exchange/message_types.hpp"
+#include "../../src/exchanges/base/message_types.hpp"
 #include "../../src/orderbook/order_book.hpp"
 #include "../../src/orderbook/order_book_synchronizer.hpp"
 #include "../../src/orderbook/price_level.hpp"
 
 using namespace crypto_lob;
 using namespace crypto_lob::orderbook;
-using namespace crypto_lob::exchange;
+using namespace crypto_lob::exchanges::base;
 using namespace crypto_lob::core;
 
 class OrderBookSynchronizerTest : public ::testing::Test {

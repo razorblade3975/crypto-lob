@@ -8,10 +8,10 @@
 
 using namespace crypto_lob::parsing;
 using namespace crypto_lob::core;
-using namespace crypto_lob::exchange;
+using namespace crypto_lob::exchanges::base;
 
 // Bring in the Timestamp alias
-using Timestamp = crypto_lob::exchange::Timestamp;
+using Timestamp = crypto_lob::exchanges::base::Timestamp;
 
 // Mock parser for testing with real JSON parsing
 class MockParser : public ParserBase<MockParser> {

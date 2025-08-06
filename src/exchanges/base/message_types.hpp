@@ -11,7 +11,7 @@
 #include "core/enums.hpp"
 #include "core/price.hpp"
 
-namespace crypto_lob::exchange {
+namespace crypto_lob::exchanges::base {
 
 // Import core types into exchange namespace
 using crypto_lob::core::ExchangeId;
@@ -358,4 +358,4 @@ struct MessagePoolConfig {
     size_t other_capacity = 1000;         // Other message types
 };
 
-}  // namespace crypto_lob::exchange
+}  // namespace crypto_lob::exchanges::base

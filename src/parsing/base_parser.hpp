@@ -9,7 +9,7 @@
 #include <type_traits>
 
 #include "../core/memory_pool.hpp"
-#include "../exchange/message_types.hpp"
+#include "../exchanges/base/message_types.hpp"
 
 namespace crypto_lob::parsing {
 
@@ -49,7 +49,7 @@ class ParserBase;
 template <typename T>
 struct ParserTraits {
     // Force explicit specialization - no default exchange
-    static constexpr exchange::ExchangeId exchange_id = exchange::ExchangeId::UNKNOWN;
+    static constexpr exchanges::base::ExchangeId exchange_id = exchanges::base::ExchangeId::UNKNOWN;
     static constexpr bool supports_checksum = false;
 };
 
@@ -61,9 +61,9 @@ inline constexpr bool always_false_v = false;
 template <typename Derived>
 class ParserBase {
   public:
-    using MessagePtr = exchange::MarketDataMessage*;
+    using MessagePtr = exchanges::base::MarketDataMessage*;
     using Timestamp = std::chrono::nanoseconds;
-    using Pool = core::MemoryPool<exchange::MarketDataMessage>;
+    using Pool = core::MemoryPool<exchanges::base::MarketDataMessage>;
 
     explicit ParserBase(Pool& message_pool) noexcept : message_pool_(message_pool) {}
 
@@ -92,8 +92,8 @@ class ParserBase {
         return static_cast<Derived*>(this)->parse_update_impl(json_data, symbol, receive_time, error_out);
     }
 
-    [[nodiscard]] static constexpr exchange::ExchangeId get_exchange_id() noexcept {
-        static_assert(ParserTraits<Derived>::exchange_id != exchange::ExchangeId::UNKNOWN,
+    [[nodiscard]] static constexpr exchanges::base::ExchangeId get_exchange_id() noexcept {
+        static_assert(ParserTraits<Derived>::exchange_id != exchanges::base::ExchangeId::UNKNOWN,
                       "ParserTraits must be explicitly specialized for each parser type");
         return ParserTraits<Derived>::exchange_id;
     }
@@ -103,7 +103,7 @@ class ParserBase {
     }
 
     // Return bool for success/failure, error details in out-parameter
-    [[nodiscard]] bool verify_checksum(const exchange::MarketDataMessage& msg,
+    [[nodiscard]] bool verify_checksum(const exchanges::base::MarketDataMessage& msg,
                                        std::string_view checksum_str,
                                        ChecksumResult& result_out,
                                        ParseErrorInfo* error_out = nullptr) const noexcept {
