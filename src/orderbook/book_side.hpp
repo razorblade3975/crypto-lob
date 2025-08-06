@@ -297,7 +297,4 @@ class BookSide {
     // Current design focuses on correctness and simplicity
 };
 
-using AskSide = BookSide<AskComparator>;
-using BidSide = BookSide<BidComparator>;
-
 }  // namespace crypto_lob::core

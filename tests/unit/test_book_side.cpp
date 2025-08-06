@@ -11,6 +11,10 @@
 
 using namespace crypto_lob::core;
 
+// Type aliases for bid and ask sides
+using AskSide = BookSide<AskComparator>;
+using BidSide = BookSide<BidComparator>;
+
 // Helper functions to create prices for testing different ranges
 // Using direct Price constructor with double values for clarity
 
