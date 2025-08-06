@@ -117,8 +117,38 @@ target_compile_options(simple_latency_test PRIVATE
     -mtune=native
 )
 
+# Timestamp benchmark (requires x86_64 for full RDTSC support)
+add_executable(timestamp_benchmark
+    timestamp_benchmark.cpp
+)
+
+target_link_libraries(timestamp_benchmark
+    ${BENCHMARK_COMMON_LIBS}
+    crypto_lob_core
+)
+
+target_compile_options(timestamp_benchmark PRIVATE
+    -O3
+    -march=native
+    -mtune=native
+    -fno-omit-frame-pointer  # For profiling
+)
+
+# Enable CPU-specific optimizations for timestamp benchmark
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(timestamp_benchmark PRIVATE
+        -fvectorize
+        -fslp-vectorize
+        -ffast-math
+    )
+endif()
+
+# Add timestamp benchmark to CTest
+add_test(NAME benchmark_timestamp 
+         COMMAND timestamp_benchmark --benchmark_format=json --benchmark_out=timestamp_results.json)
+
 # Custom target to run all benchmarks
-set(BENCHMARK_TARGETS memory_pool_comparison_benchmark simple_latency_test)
+set(BENCHMARK_TARGETS memory_pool_comparison_benchmark simple_latency_test timestamp_benchmark)
 if(TARGET memory_pool_latency_benchmark)
     list(APPEND BENCHMARK_TARGETS memory_pool_latency_benchmark)
 endif()
@@ -128,4 +158,11 @@ add_custom_target(run_memory_benchmarks
     DEPENDS ${BENCHMARK_TARGETS}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running memory pool benchmarks..."
+)
+
+add_custom_target(run_timestamp_benchmark
+    COMMAND timestamp_benchmark
+    DEPENDS timestamp_benchmark
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running timestamp benchmarks..."
 )

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../../core/memory_pool.hpp"
+#include "../../core/timestamp.hpp"
 #include "../../networking/websocket_client.hpp"
 #include "binance_spot_parser.hpp"
 
@@ -171,6 +172,10 @@ class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConne
 
     // CRTP implementation - called for each message
     void on_message_impl(networking::RawMessage* msg) {
+        // Capture RDTSC timestamp as early as possible for minimum latency
+        // This gives us a high-precision relative timestamp for latency measurement
+        uint64_t arrival_tsc = crypto_lob::core::rdtsc();
+
         // Prefetch parser's thread-local simdjson instance
         __builtin_prefetch(&parser_, 0, 3);
 
@@ -189,7 +194,9 @@ class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConne
         if (result.has_value()) {
             MarketDataMessage* market_msg = result.value();
 
-            // Set the TSC timestamp from the raw message
+            // For now, use the timestamp from the raw message which should already be
+            // captured at the earliest point in the network layer.
+            // In the future, the network layer should use RDTSC for capture.
             market_msg->local_timestamp = msg->timestamp_ns;
 
             // Invoke callback

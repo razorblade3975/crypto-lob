@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "../../core/enums.hpp"
+#include "../../core/timestamp.hpp"
 #include "../../exchange/message_types.hpp"
 #include "../../parsing/base_parser.hpp"
 
@@ -236,8 +237,12 @@ class BinanceSpotParser : public ParserBase<BinanceSpotParser> {
         msg.header.type = type;
         msg.header.exchange_id = ExchangeId::BINANCE_SPOT;
         msg.header.local_timestamp = receive_time;
+
+        // For exchange_timestamp, we still need wall clock time since it represents
+        // when the exchange generated the message. We'll extract this from the JSON later.
+        // For now, use high-resolution clock as fallback
         msg.header.exchange_timestamp =
-            std::chrono::duration_cast<Timestamp>(std::chrono::system_clock::now().time_since_epoch());
+            std::chrono::duration_cast<Timestamp>(std::chrono::steady_clock::now().time_since_epoch());
     }
 
     // Helper to find and parse uint64 field without simdjson ondemand issues

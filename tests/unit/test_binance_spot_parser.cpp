@@ -12,14 +12,15 @@
 using namespace crypto_lob::exchanges::binance;
 using namespace crypto_lob::parsing;
 using namespace crypto_lob::exchange;
-using namespace crypto_lob::core;
+using crypto_lob::core::MemoryPool;  // Use specific import to avoid conflict
 
 class BinanceSpotParserTest : public ::testing::Test {
   protected:
     void SetUp() override {
         pool_ = std::make_unique<MemoryPool<MarketDataMessage>>(1000);
         parser_ = std::make_unique<BinanceSpotParser>(*pool_);
-        receive_time_ = std::chrono::duration_cast<Timestamp>(std::chrono::system_clock::now().time_since_epoch());
+        receive_time_ = std::chrono::duration_cast<crypto_lob::exchange::Timestamp>(
+            std::chrono::system_clock::now().time_since_epoch());
     }
 
     void TearDown() override {
@@ -29,7 +30,7 @@ class BinanceSpotParserTest : public ::testing::Test {
 
     std::unique_ptr<MemoryPool<MarketDataMessage>> pool_;
     std::unique_ptr<BinanceSpotParser> parser_;
-    Timestamp receive_time_;
+    crypto_lob::exchange::Timestamp receive_time_;
 };
 
 // ===============================
