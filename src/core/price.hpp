@@ -589,25 +589,27 @@ class Price {
 /**
  * @typedef Quantity
  * @brief Type alias for quantities in order book levels
- * 
+ *
  * DESIGN RATIONALE:
  * - Uses the same fixed-point representation as Price for consistency
  * - Provides 9 decimal places for precise quantity representation
  * - Enables exact calculations without floating-point errors
  * - Same performance characteristics as Price (single 64-bit integer)
- * 
+ *
  * USAGE:
  * - Represents order sizes, trade volumes, and position quantities
  * - Supports same arithmetic operations as Price
  * - Range: 0.000000001 to 9,223,372,036.854775807 units
  * - Suitable for both large institutional orders and micro-trading
- * 
+ *
  * EXAMPLES:
  * @code
  *   Quantity btc_amount = Quantity::from_string("0.12345678");  // 8 decimals typical for BTC
  *   Quantity total_volume = btc_amount * 1000;  // Aggregate across orders
- *   if (available_balance >= required_quantity) { /* execute */ }
-*@endcode* / using Quantity = Price;
+ *   if (available_balance >= required_quantity) { // execute
+ * @endcode
+ */
+using Quantity = Price;
 
 /**
  * @concept PriceType
