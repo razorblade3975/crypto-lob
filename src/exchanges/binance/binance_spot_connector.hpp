@@ -4,23 +4,23 @@
 #include <vector>
 
 #include "../../core/memory_pool.hpp"
-#include "../../networking/websocket_client_hft.hpp"
+#include "../../networking/websocket_client.hpp"
 #include "binance_spot_parser.hpp"
 
 namespace crypto_lob::exchanges::binance {
 
 /**
- * HFT-optimized Binance WebSocket connector
+ * HFT-optimized Binance Spot WebSocket connector
  *
- * Implements Binance-specific protocol requirements:
+ * Implements Binance Spot-specific protocol requirements:
  * - Combined streams via /stream?streams=
  * - 20-second ping interval with 1-minute pong deadline
  * - Depth snapshot + delta synchronization
  * - Trade and book ticker streams
  */
-class BinanceConnectorHFT : public networking::WebSocketClientHFT<BinanceConnectorHFT> {
+class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConnector> {
   public:
-    using Base = networking::WebSocketClientHFT<BinanceConnectorHFT>;
+    using Base = networking::WebSocketClient<BinanceSpotConnector>;
     using MessageCallback = std::function<void(MarketDataMessage*)>;
 
     // Binance-specific configuration
@@ -82,11 +82,11 @@ class BinanceConnectorHFT : public networking::WebSocketClientHFT<BinanceConnect
         }
     };
 
-    BinanceConnectorHFT(asio::io_context& io_context,
-                        ssl::context& ssl_context,
-                        const Config& config,
-                        Base::MessageQueue& outbound_queue,
-                        MessageCallback callback)
+    BinanceSpotConnector(asio::io_context& io_context,
+                         ssl::context& ssl_context,
+                         const Config& config,
+                         Base::MessageQueue& outbound_queue,
+                         MessageCallback callback)
         : Base(io_context, ssl_context, config.to_websocket_config(), outbound_queue),
           config_(config),
           message_callback_(callback),

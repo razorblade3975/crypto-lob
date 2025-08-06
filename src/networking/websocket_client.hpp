@@ -2,25 +2,27 @@
 
 #include <atomic>
 #include <chrono>
-#include <cmath>  // For proper floating point calculations
 #include <coroutine>
+#include <cstring>
 #include <memory>
-#include <string>
-#include <string_view>
-#include <thread>  // For std::this_thread::sleep_for
-#include <vector>
 
 #include <boost/asio.hpp>
 #include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 
+#include "../core/cache.hpp"
 #include "../core/spsc_ring.hpp"
+#include "../core/timestamp.hpp"
 #include "raw_message_pool.hpp"
+
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 namespace crypto_lob::networking {
 
@@ -30,45 +32,42 @@ namespace websocket = beast::websocket;
 namespace ssl = asio::ssl;
 using tcp = asio::ip::tcp;
 
-// Forward declaration for CRTP
-template <typename Derived>
-class WebSocketClient;
-
-// WebSocket connection state
-enum class ConnectionState : uint8_t {
+// WebSocket connection state - packed into single atomic for efficiency
+enum class ConnectionState : uint32_t {
     DISCONNECTED = 0,
     CONNECTING = 1,
     CONNECTED = 2,
     DISCONNECTING = 3,
-    RECONNECTING = 4
+    RECONNECTING = 4,
+    READING = 5,
+    ERROR = 6
 };
 
-// Connection statistics for monitoring - properly cache-aligned to 128 bytes
-struct alignas(128) ConnectionStats {
-    // First cache line (64 bytes)
+// HFT-optimized statistics - separate hot/cold counters
+struct alignas(128) HotStats {
     std::atomic<uint64_t> messages_received{0};
     std::atomic<uint64_t> bytes_received{0};
+    std::atomic<uint64_t> last_message_tsc{0};  // TSC instead of timestamp
+    std::atomic<uint64_t> last_ping_tsc{0};
+    std::atomic<uint64_t> last_pong_tsc{0};
+    // Padding to avoid false sharing
+    char padding[64 - (5 * sizeof(std::atomic<uint64_t>))];
+};
+
+struct alignas(64) ColdStats {
     std::atomic<uint64_t> messages_sent{0};
     std::atomic<uint64_t> bytes_sent{0};
     std::atomic<uint64_t> reconnect_count{0};
-    std::atomic<uint64_t> last_message_timestamp{0};
-    std::atomic<uint64_t> last_ping_timestamp{0};
-    std::atomic<uint64_t> last_pong_timestamp{0};
-
-    // Second cache line (64 bytes)
+    std::atomic<uint64_t> connection_errors{0};
     std::atomic<uint64_t> fragmented_messages{0};
     std::atomic<uint64_t> oversized_messages{0};
-    std::atomic<uint64_t> connection_errors{0};
-    std::atomic<uint64_t> parse_errors{0};
-    // Padding to ensure full 128 byte alignment
-    char padding[32];
 };
 
 // Configuration for WebSocket client
 struct WebSocketConfig {
     std::string host;
     std::string port;
-    std::string target;  // WebSocket path
+    std::string target;
     bool use_ssl = true;
 
     // Timeouts in milliseconds
@@ -81,25 +80,31 @@ struct WebSocketConfig {
     // Reconnection settings
     uint32_t initial_reconnect_delay_ms = 1000;
     uint32_t max_reconnect_delay_ms = 60000;
-    double reconnect_backoff_factor = 2.0;  // Use double for safe calculation
-    uint32_t max_reconnect_attempts = 0;    // 0 = infinite
+    uint32_t max_reconnect_attempts = 0;  // 0 = infinite
+
+    // HFT settings
+    int cpu_affinity = -1;  // CPU core to pin to (-1 = no pinning)
+    bool use_huge_pages = true;
+    bool prefetch_next = true;
 
     // Message handling
-    bool enable_compression = false;          // WebSocket compression
-    uint32_t max_message_size = 1024 * 1024;  // 1MB max for fragmented messages
+    static constexpr size_t MAX_MESSAGE_SIZE = 1024 * 1024;  // 1MB max
 };
 
 /**
- * @brief HFT-optimized WebSocket client using Boost.Beast with C++20 coroutines
+ * HFT-optimized WebSocket client using Boost.Beast with C++20 coroutines
  *
- * This class template provides the core WebSocket functionality with zero-copy
- * message handling via RawMessagePool. Exchange-specific implementations should
- * derive from this class using CRTP for static polymorphism.
- *
- * @tparam Derived The derived exchange-specific implementation
+ * Key optimizations:
+ * - RDTSC timestamps (~3ns vs ~50ns for clock_gettime)
+ * - Fixed-size buffers (no heap allocations)
+ * - Hot/cold data separation
+ * - CPU affinity support
+ * - Prefetching for predictable access patterns
+ * - Single state machine coroutine (reduced overhead)
+ * - No virtual functions or shared_ptr overhead
  */
 template <typename Derived>
-class alignas(64) WebSocketClient : public std::enable_shared_from_this<WebSocketClient<Derived>> {
+class alignas(64) WebSocketClient {
   public:
     using MessageQueue = core::SPSCRing<RawMessage*>;
 
@@ -107,90 +112,75 @@ class alignas(64) WebSocketClient : public std::enable_shared_from_this<WebSocke
                     ssl::context& ssl_context,
                     const WebSocketConfig& config,
                     MessageQueue& outbound_queue)
-        : io_context_(io_context),
-          ssl_context_(ssl_context),
-          config_(config),
-          outbound_queue_(outbound_queue),
+        : hot_{io_context, outbound_queue, ConnectionState::DISCONNECTED},
+          cold_{ssl_context, config},
           resolver_(io_context),
-          state_(ConnectionState::DISCONNECTED),
-          active_tasks_(0),
           reconnect_timer_(io_context),
           ping_timer_(io_context),
-          pong_timer_(io_context),
-          current_reconnect_delay_ms_(config.initial_reconnect_delay_ms) {
-        // Reserve space for message assembly buffer
-        if (config_.max_message_size > RawMessage::MAX_FRAME_SIZE) {
-            assembly_buffer_.reserve(config_.max_message_size);
+          pong_timer_(io_context) {
+        // Pin to CPU if requested
+        if (config.cpu_affinity >= 0) {
+            pin_to_cpu(config.cpu_affinity);
         }
     }
 
-    virtual ~WebSocketClient() {
-        // Synchronously stop all operations
+    // Non-virtual destructor - CRTP doesn't need virtual
+    ~WebSocketClient() {
         stop_and_wait();
     }
 
-    // Start the WebSocket client (initiates connection)
+    // Start the WebSocket client
     void start() {
-        auto self = this->shared_from_this();
-        active_tasks_.fetch_add(1, std::memory_order_acq_rel);
+        hot_.state.store(static_cast<uint32_t>(ConnectionState::CONNECTING), std::memory_order_release);
 
+        // Single state machine coroutine
         asio::co_spawn(
-            io_context_,
-            [self, this]() -> asio::awaitable<void> {
-                co_await connect_with_retry();
-                active_tasks_.fetch_sub(1, std::memory_order_acq_rel);
-            },
-            asio::detached);
+            hot_.io_context, [this]() -> asio::awaitable<void> { co_await run_state_machine(); }, asio::detached);
     }
 
-    // Stop the WebSocket client (graceful shutdown)
+    // Stop the WebSocket client
     void stop() {
-        auto self = this->shared_from_this();
-        active_tasks_.fetch_add(1, std::memory_order_acq_rel);
-
-        asio::co_spawn(
-            io_context_,
-            [self, this]() -> asio::awaitable<void> {
-                co_await disconnect();
-                active_tasks_.fetch_sub(1, std::memory_order_acq_rel);
-            },
-            asio::detached);
+        uint32_t expected = static_cast<uint32_t>(ConnectionState::CONNECTED);
+        hot_.state.compare_exchange_strong(
+            expected, static_cast<uint32_t>(ConnectionState::DISCONNECTING), std::memory_order_acq_rel);
     }
 
-    // Synchronous stop and wait for all tasks
+    // Synchronous stop and wait
     void stop_and_wait() {
-        // Signal shutdown
-        state_.store(ConnectionState::DISCONNECTING, std::memory_order_release);
+        stop();
 
-        // Cancel all operations
-        stop_active_operations();
-
-        // Wait for all active tasks to complete
-        // Use exponential backoff for checking
-        int wait_ms = 1;
-        while (active_tasks_.load(std::memory_order_acquire) > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
-            wait_ms = std::min(wait_ms * 2, 100);  // Max 100ms between checks
+        // Busy wait with exponential backoff
+        uint32_t wait_us = 1;
+        while (hot_.state.load(std::memory_order_acquire) != static_cast<uint32_t>(ConnectionState::DISCONNECTED)) {
+            if (wait_us < 1000) {
+                // Spin for short waits
+                for (uint32_t i = 0; i < wait_us * 10; ++i) {
+                    __builtin_ia32_pause();
+                }
+                wait_us *= 2;
+            } else {
+                // Yield for longer waits
+                std::this_thread::yield();
+            }
         }
 
-        // Now safe to destroy streams
+        // Clean up streams
         ws_.reset();
         ws_plain_.reset();
     }
 
-    // Send a message with error handling
+    // Send a message
     asio::awaitable<bool> send_message(std::string_view message) {
-        if (state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        if (hot_.state.load(std::memory_order_acquire) != static_cast<uint32_t>(ConnectionState::CONNECTED)) {
             co_return false;
         }
 
         boost::system::error_code ec;
 
-        // Check for null before use
-        if (config_.use_ssl && ws_) {
+        if (cold_.config.use_ssl && ws_) {
             co_await ws_->async_write(asio::buffer(message.data(), message.size()),
                                       asio::redirect_error(asio::use_awaitable, ec));
-        } else if (!config_.use_ssl && ws_plain_) {
+        } else if (!cold_.config.use_ssl && ws_plain_) {
             co_await ws_plain_->async_write(asio::buffer(message.data(), message.size()),
                                             asio::redirect_error(asio::use_awaitable, ec));
         } else {
@@ -198,8 +188,8 @@ class alignas(64) WebSocketClient : public std::enable_shared_from_this<WebSocke
         }
 
         if (!ec) {
-            stats_.messages_sent.fetch_add(1, std::memory_order_relaxed);
-            stats_.bytes_sent.fetch_add(static_cast<uint64_t>(message.size()), std::memory_order_relaxed);
+            cold_stats_.messages_sent.fetch_add(1, std::memory_order_relaxed);
+            cold_stats_.bytes_sent.fetch_add(message.size(), std::memory_order_relaxed);
             co_return true;
         }
 
@@ -208,12 +198,16 @@ class alignas(64) WebSocketClient : public std::enable_shared_from_this<WebSocke
 
     // Get connection state
     [[nodiscard]] ConnectionState get_state() const noexcept {
-        return state_.load(std::memory_order_acquire);
+        return static_cast<ConnectionState>(hot_.state.load(std::memory_order_acquire));
     }
 
-    // Get connection statistics
-    [[nodiscard]] const ConnectionStats& get_stats() const noexcept {
-        return stats_;
+    // Get statistics
+    [[nodiscard]] const HotStats& get_hot_stats() const noexcept {
+        return hot_stats_;
+    }
+
+    [[nodiscard]] const ColdStats& get_cold_stats() const noexcept {
+        return cold_stats_;
     }
 
   protected:
@@ -225,544 +219,402 @@ class alignas(64) WebSocketClient : public std::enable_shared_from_this<WebSocke
         return static_cast<const Derived&>(*this);
     }
 
-    // Called when connection is established
+    // Callbacks for derived class
     asio::awaitable<void> on_connected() {
         co_return co_await derived().on_connected_impl();
     }
 
-    // Called to handle incoming messages
     void on_message(RawMessage* msg) {
         derived().on_message_impl(msg);
     }
 
-    // Called to handle ping messages (exchange-specific)
-    asio::awaitable<void> on_ping(std::string_view data) {
-        co_return co_await derived().on_ping_impl(data);
-    }
-
-    // Called when connection is lost
     void on_disconnected() {
         derived().on_disconnected_impl();
     }
 
   private:
-    // Control frame callback handler for pong messages
-    void handle_control_frame(websocket::frame_type kind, beast::string_view payload) {
-        if (kind == websocket::frame_type::pong) {
-            stats_.last_pong_timestamp.store(std::chrono::steady_clock::now().time_since_epoch().count(),
-                                             std::memory_order_relaxed);
+    // Pin thread to specific CPU core
+    void pin_to_cpu(int cpu_id) {
+#ifdef __linux__
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(cpu_id, &cpuset);
 
-            // Cancel pong timer since we received the pong
-            pong_timer_.cancel();
-        } else if (kind == websocket::frame_type::ping) {
-            // Beast handles ping responses automatically
+        pthread_t thread = pthread_self();
+        if (pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset) != 0) {
+            // Log warning but continue
         }
+#endif
     }
 
-    // Stop all active operations before reconnection
-    void stop_active_operations() {
-        // Cancel all timers
-        ping_timer_.cancel();
-        pong_timer_.cancel();
-        reconnect_timer_.cancel();
+    // Main state machine - single coroutine manages all states
+    asio::awaitable<void> run_state_machine() {
+        uint32_t reconnect_delay_ms = cold_.config.initial_reconnect_delay_ms;
+        uint32_t reconnect_attempts = 0;
 
-        // Close WebSocket streams properly before canceling
-        boost::system::error_code ec;
-        if (ws_) {
-            // Try to close gracefully first
-            ws_->async_close(websocket::close_code::going_away, [](boost::system::error_code) {});
-            // Then cancel underlying socket
-            beast::get_lowest_layer(*ws_).cancel(ec);
-        }
-        if (ws_plain_) {
-            ws_plain_->async_close(websocket::close_code::going_away, [](boost::system::error_code) {});
-            ws_plain_->next_layer().cancel(ec);
-        }
-    }
+        while (true) {
+            auto state = static_cast<ConnectionState>(hot_.state.load(std::memory_order_acquire));
 
-    // Connect with exponential backoff retry
-    asio::awaitable<void> connect_with_retry() {
-        uint32_t attempts = 0;
-        auto self = this->shared_from_this();
+            switch (state) {
+                case ConnectionState::CONNECTING: {
+                    if (co_await connect_once()) {
+                        hot_.state.store(static_cast<uint32_t>(ConnectionState::CONNECTED), std::memory_order_release);
+                        reconnect_delay_ms = cold_.config.initial_reconnect_delay_ms;
+                        reconnect_attempts = 0;
+                        co_await on_connected();
+                    } else {
+                        // Connection failed
+                        if (cold_.config.max_reconnect_attempts > 0 &&
+                            ++reconnect_attempts >= cold_.config.max_reconnect_attempts) {
+                            hot_.state.store(static_cast<uint32_t>(ConnectionState::ERROR), std::memory_order_release);
+                            co_return;
+                        }
 
-        while (config_.max_reconnect_attempts == 0 || attempts < config_.max_reconnect_attempts) {
-            // Check if we should stop
-            if (state_.load(std::memory_order_acquire) == ConnectionState::DISCONNECTING) {
-                co_return;
-            }
+                        // Wait before reconnecting
+                        reconnect_timer_.expires_after(std::chrono::milliseconds(reconnect_delay_ms));
+                        co_await reconnect_timer_.async_wait(asio::use_awaitable);
 
-            // Set state to reconnecting
-            state_.store(ConnectionState::RECONNECTING, std::memory_order_release);
-
-            // Stop any existing operations
-            stop_active_operations();
-
-            // Wait for active tasks to complete
-            // Fixed logic: wait until active_tasks reaches 1 (just this coroutine)
-            for (int wait_count = 0; wait_count < 100; ++wait_count) {
-                if (active_tasks_.load(std::memory_order_acquire) <= 1) {
+                        // Exponential backoff (safe calculation)
+                        reconnect_delay_ms = std::min(reconnect_delay_ms * 2, cold_.config.max_reconnect_delay_ms);
+                        cold_stats_.reconnect_count.fetch_add(1, std::memory_order_relaxed);
+                    }
                     break;
                 }
-                co_await asio::steady_timer(io_context_, std::chrono::milliseconds(10)).async_wait(asio::use_awaitable);
+
+                case ConnectionState::CONNECTED: {
+                    // Read messages and handle ping/pong
+                    co_await parallel_read_and_ping();
+
+                    // If we exit, we disconnected
+                    if (hot_.state.load(std::memory_order_acquire) !=
+                        static_cast<uint32_t>(ConnectionState::DISCONNECTING)) {
+                        // Unexpected disconnect - reconnect
+                        hot_.state.store(static_cast<uint32_t>(ConnectionState::CONNECTING), std::memory_order_release);
+                        on_disconnected();
+                    }
+                    break;
+                }
+
+                case ConnectionState::DISCONNECTING: {
+                    co_await disconnect();
+                    hot_.state.store(static_cast<uint32_t>(ConnectionState::DISCONNECTED), std::memory_order_release);
+                    on_disconnected();
+                    co_return;
+                }
+
+                case ConnectionState::DISCONNECTED:
+                case ConnectionState::ERROR:
+                    co_return;
+
+                default:
+                    // Unknown state
+                    co_return;
             }
-
-            // Now safe to clear websocket connections
-            ws_.reset();
-            ws_plain_.reset();
-
-            if (co_await connect_once()) {
-                // Reset reconnect delay on successful connection
-                current_reconnect_delay_ms_ = config_.initial_reconnect_delay_ms;
-
-                // Start read loop
-                active_tasks_.fetch_add(1, std::memory_order_acq_rel);
-                asio::co_spawn(
-                    io_context_,
-                    [self, this]() -> asio::awaitable<void> {
-                        co_await read_loop();
-                        active_tasks_.fetch_sub(1, std::memory_order_acq_rel);
-                    },
-                    asio::detached);
-
-                // Start ping loop
-                active_tasks_.fetch_add(1, std::memory_order_acq_rel);
-                asio::co_spawn(
-                    io_context_,
-                    [self, this]() -> asio::awaitable<void> {
-                        co_await ping_loop();
-                        active_tasks_.fetch_sub(1, std::memory_order_acq_rel);
-                    },
-                    asio::detached);
-
-                co_return;
-            }
-
-            // Connection failed, wait before retry
-            attempts++;
-            stats_.reconnect_count.fetch_add(1, std::memory_order_relaxed);
-
-            reconnect_timer_.expires_after(std::chrono::milliseconds(current_reconnect_delay_ms_));
-
-            boost::system::error_code ec;
-            co_await reconnect_timer_.async_wait(asio::redirect_error(asio::use_awaitable, ec));
-
-            if (ec) {  // Timer cancelled
-                co_return;
-            }
-
-            // Exponential backoff with safe calculation
-            double next_delay = static_cast<double>(current_reconnect_delay_ms_) * config_.reconnect_backoff_factor;
-            current_reconnect_delay_ms_ =
-                static_cast<uint32_t>(std::min(next_delay, static_cast<double>(config_.max_reconnect_delay_ms)));
         }
     }
 
-    // Single connection attempt with proper exception handling
+    // Connect once
     asio::awaitable<bool> connect_once() {
-        state_.store(ConnectionState::CONNECTING, std::memory_order_release);
-
         boost::system::error_code ec;
 
-        // Resolve the host
-        auto const results =
-            co_await resolver_.async_resolve(config_.host, config_.port, asio::redirect_error(asio::use_awaitable, ec));
+        // Resolve host
+        auto results = co_await resolver_.async_resolve(
+            cold_.config.host, cold_.config.port, asio::redirect_error(asio::use_awaitable, ec));
 
         if (ec) {
-            stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
+            cold_stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
             co_return false;
         }
 
-        if (config_.use_ssl) {
-            // Create SSL WebSocket stream
+        if (cold_.config.use_ssl) {
             auto stream =
-                std::make_unique<websocket::stream<beast::ssl_stream<tcp::socket>>>(io_context_, ssl_context_);
+                std::make_unique<websocket::stream<beast::ssl_stream<tcp::socket>>>(hot_.io_context, cold_.ssl_context);
 
-            // Connect TCP socket with timeout
             auto& socket = beast::get_lowest_layer(*stream);
-            socket.expires_after(std::chrono::milliseconds(config_.connect_timeout_ms));
+            socket.expires_after(std::chrono::milliseconds(cold_.config.connect_timeout_ms));
 
             co_await socket.async_connect(results, asio::redirect_error(asio::use_awaitable, ec));
-
             if (ec) {
-                stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
+                cold_stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
                 co_return false;
             }
 
-            // Perform SSL handshake
-            socket.expires_after(std::chrono::milliseconds(config_.handshake_timeout_ms));
+            // SSL handshake
+            socket.expires_after(std::chrono::milliseconds(cold_.config.handshake_timeout_ms));
             co_await stream->next_layer().async_handshake(ssl::stream_base::client,
                                                           asio::redirect_error(asio::use_awaitable, ec));
-
             if (ec) {
-                stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
+                cold_stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
                 co_return false;
             }
 
-            // Set WebSocket options
-            stream->set_option(websocket::stream_base::timeout{std::chrono::milliseconds(config_.read_timeout_ms),
-                                                               std::chrono::milliseconds(config_.ping_interval_ms),
-                                                               true});
-
-            stream->set_option(websocket::stream_base::decorator(
-                [](websocket::request_type& req) { req.set(beast::http::field::user_agent, "crypto-lob-hft/1.0"); }));
-
-            // Set control callback for pong handling
-            stream->control_callback([this](websocket::frame_type kind, beast::string_view payload) {
-                handle_control_frame(kind, payload);
-            });
-
-            // Enable compression if configured
-            if (config_.enable_compression) {
-                websocket::permessage_deflate pmd;
-                pmd.client_enable = true;
-                stream->set_option(pmd);
-            }
-
-            // Perform WebSocket handshake
-            socket.expires_after(std::chrono::milliseconds(config_.handshake_timeout_ms));
+            // WebSocket handshake
             co_await stream->async_handshake(
-                config_.host, config_.target, asio::redirect_error(asio::use_awaitable, ec));
-
+                cold_.config.host, cold_.config.target, asio::redirect_error(asio::use_awaitable, ec));
             if (ec) {
-                stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
+                cold_stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
                 co_return false;
             }
+
+            // Set control callback for pong
+            stream->control_callback([this](websocket::frame_type kind, beast::string_view) {
+                if (kind == websocket::frame_type::pong) {
+                    hot_stats_.last_pong_tsc.store(core::rdtsc(), std::memory_order_relaxed);
+                    pong_timer_.cancel();
+                }
+            });
 
             ws_ = std::move(stream);
         } else {
-            // Non-SSL WebSocket (for testing)
-            auto stream = std::make_unique<websocket::stream<tcp::socket>>(io_context_);
+            // Non-SSL version (similar logic)
+            auto stream = std::make_unique<websocket::stream<tcp::socket>>(hot_.io_context);
 
-            // Connect TCP socket
-            stream->next_layer().expires_after(std::chrono::milliseconds(config_.connect_timeout_ms));
+            stream->next_layer().expires_after(std::chrono::milliseconds(cold_.config.connect_timeout_ms));
 
             co_await stream->next_layer().async_connect(results, asio::redirect_error(asio::use_awaitable, ec));
-
             if (ec) {
-                stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
+                cold_stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
                 co_return false;
             }
-
-            // Set WebSocket options
-            stream->set_option(websocket::stream_base::timeout{std::chrono::milliseconds(config_.read_timeout_ms),
-                                                               std::chrono::milliseconds(config_.ping_interval_ms),
-                                                               true});
-
-            // Set control callback for pong handling
-            stream->control_callback([this](websocket::frame_type kind, beast::string_view payload) {
-                handle_control_frame(kind, payload);
-            });
-
-            // Perform WebSocket handshake
-            stream->next_layer().expires_after(std::chrono::milliseconds(config_.handshake_timeout_ms));
 
             co_await stream->async_handshake(
-                config_.host, config_.target, asio::redirect_error(asio::use_awaitable, ec));
-
+                cold_.config.host, cold_.config.target, asio::redirect_error(asio::use_awaitable, ec));
             if (ec) {
-                stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
+                cold_stats_.connection_errors.fetch_add(1, std::memory_order_relaxed);
                 co_return false;
             }
+
+            stream->control_callback([this](websocket::frame_type kind, beast::string_view) {
+                if (kind == websocket::frame_type::pong) {
+                    hot_stats_.last_pong_tsc.store(core::rdtsc(), std::memory_order_relaxed);
+                    pong_timer_.cancel();
+                }
+            });
 
             ws_plain_ = std::move(stream);
         }
 
-        state_.store(ConnectionState::CONNECTED, std::memory_order_release);
-
-        // Notify derived class
-        co_await on_connected();
-
         co_return true;
     }
 
-    // Main read loop with proper fragmentation handling
-    asio::awaitable<void> read_loop() {
-        // Get thread-local pool
-        auto& pool = get_thread_pool();
-        auto self = this->shared_from_this();
+    // Parallel read and ping handling
+    asio::awaitable<void> parallel_read_and_ping() {
+        auto read_task = read_messages();
+        auto ping_task = ping_loop();
 
-        // Check state at start of each iteration
-        while (state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
-            // Acquire buffer from thread-local pool
+        // Run both in parallel, exit when either completes
+        auto [read_result, ping_result] = co_await asio::experimental::make_parallel_group(
+                                              asio::co_spawn(hot_.io_context, std::move(read_task), asio::deferred),
+                                              asio::co_spawn(hot_.io_context, std::move(ping_task), asio::deferred))
+                                              .async_wait(asio::experimental::wait_for_one(), asio::use_awaitable);
+    }
+
+    // Read messages with zero-copy and prefetching
+    asio::awaitable<void> read_messages() {
+        auto& pool = get_thread_pool();
+
+        while (hot_.state.load(std::memory_order_acquire) == static_cast<uint32_t>(ConnectionState::CONNECTED)) {
             RawMessage* msg = pool.acquire();
             if (!msg) [[unlikely]] {
-                // Pool exhausted
-                co_await asio::steady_timer(io_context_, std::chrono::microseconds(100))
+                // Pool exhausted - wait briefly
+                co_await asio::steady_timer(hot_.io_context, std::chrono::microseconds(10))
                     .async_wait(asio::use_awaitable);
                 continue;
+            }
+
+            // Prefetch message buffer for write
+            if (cold_.config.prefetch_next) {
+                __builtin_prefetch(msg->data, 1, 3);  // Write, high temporal locality
             }
 
             boost::system::error_code ec;
             size_t bytes_read = 0;
             bool is_complete = false;
 
-            // Read message (may be fragmented) - check for null streams
-            if (config_.use_ssl && ws_) {
-                // Use async_read_some to respect buffer size limit
+            // Read message
+            if (cold_.config.use_ssl && ws_) {
                 bytes_read = co_await ws_->async_read_some(asio::buffer(msg->data, RawMessage::MAX_FRAME_SIZE),
                                                            asio::redirect_error(asio::use_awaitable, ec));
 
-                if (!ec && ws_) {  // Check ws_ still valid after await
+                if (!ec) {
                     is_complete = ws_->is_message_done();
                 }
-            } else if (!config_.use_ssl && ws_plain_) {
+            } else if (ws_plain_) {
                 bytes_read = co_await ws_plain_->async_read_some(asio::buffer(msg->data, RawMessage::MAX_FRAME_SIZE),
                                                                  asio::redirect_error(asio::use_awaitable, ec));
 
-                if (!ec && ws_plain_) {  // Check ws_plain_ still valid after await
+                if (!ec) {
                     is_complete = ws_plain_->is_message_done();
                 }
-            } else {
-                // Stream was destroyed while waiting
-                pool.release(msg);
-                co_return;
             }
 
             if (ec) {
                 pool.release(msg);
-
-                // Check if we're disconnecting (expected)
-                if (state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
-                    co_return;
-                }
-
-                // Unexpected error - trigger reconnection
-                state_.store(ConnectionState::DISCONNECTED, std::memory_order_release);
-                on_disconnected();
-
-                // Start reconnection
-                active_tasks_.fetch_add(1, std::memory_order_acq_rel);
-                asio::co_spawn(
-                    io_context_,
-                    [self, this]() -> asio::awaitable<void> {
-                        co_await connect_with_retry();
-                        active_tasks_.fetch_sub(1, std::memory_order_acq_rel);
-                    },
-                    asio::detached);
-                co_return;
-            }
-
-            // Validate bytes_read to prevent buffer overflow
-            if (bytes_read > RawMessage::MAX_FRAME_SIZE) [[unlikely]] {
-                pool.release(msg);
-                state_.store(ConnectionState::DISCONNECTED, std::memory_order_release);
-                co_return;
+                co_return;  // Exit on error
             }
 
             // Handle fragmented messages
             if (!is_complete) {
-                // Message is fragmented - accumulate in assembly buffer
-                stats_.fragmented_messages.fetch_add(1, std::memory_order_relaxed);
+                // Accumulate in fixed buffer
+                if (assembly_size_ + bytes_read > WebSocketConfig::MAX_MESSAGE_SIZE) {
+                    // Message too large - drain and drop
+                    cold_stats_.oversized_messages.fetch_add(1, std::memory_order_relaxed);
+                    assembly_size_ = 0;
 
-                // Check if accumulated size would exceed limit
-                if (assembly_buffer_.size() + bytes_read > config_.max_message_size) {
-                    // Message too large - drop it
-                    stats_.oversized_messages.fetch_add(1, std::memory_order_relaxed);
-                    assembly_buffer_.clear();
-
-                    // Continue reading to consume rest of oversized message
-                    // Keep ownership of buffer until drain is complete
-                    while (!is_complete && state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
-                        if (config_.use_ssl && ws_) {
-                            size_t drain_bytes =
-                                co_await ws_->async_read_some(asio::buffer(msg->data, RawMessage::MAX_FRAME_SIZE),
-                                                              asio::redirect_error(asio::use_awaitable, ec));
-                            if (!ec && ws_) {
+                    // Drain remaining fragments
+                    while (!is_complete) {
+                        if (cold_.config.use_ssl && ws_) {
+                            co_await ws_->async_read_some(asio::buffer(msg->data, RawMessage::MAX_FRAME_SIZE),
+                                                          asio::redirect_error(asio::use_awaitable, ec));
+                            if (!ec)
                                 is_complete = ws_->is_message_done();
-                            }
-                            if (drain_bytes > RawMessage::MAX_FRAME_SIZE) [[unlikely]] {
-                                break;
-                            }
-                        } else if (!config_.use_ssl && ws_plain_) {
-                            size_t drain_bytes =
-                                co_await ws_plain_->async_read_some(asio::buffer(msg->data, RawMessage::MAX_FRAME_SIZE),
-                                                                    asio::redirect_error(asio::use_awaitable, ec));
-                            if (!ec && ws_plain_) {
+                        } else if (ws_plain_) {
+                            co_await ws_plain_->async_read_some(asio::buffer(msg->data, RawMessage::MAX_FRAME_SIZE),
+                                                                asio::redirect_error(asio::use_awaitable, ec));
+                            if (!ec)
                                 is_complete = ws_plain_->is_message_done();
-                            }
-                            if (drain_bytes > RawMessage::MAX_FRAME_SIZE) [[unlikely]] {
-                                break;
-                            }
-                        } else {
-                            break;  // Stream destroyed
                         }
                         if (ec)
                             break;
                     }
-                    // Now safe to release buffer after drain is complete
                     pool.release(msg);
                     continue;
                 }
 
                 // Accumulate fragment
-                assembly_buffer_.append(msg->data, bytes_read);
+                std::memcpy(assembly_buffer_ + assembly_size_, msg->data, bytes_read);
+                assembly_size_ += bytes_read;
                 pool.release(msg);
-
-                // Continue reading fragments
+                cold_stats_.fragmented_messages.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
-            // Message is complete
-            if (!assembly_buffer_.empty()) {
-                // Complete assembled message
-                assembly_buffer_.append(msg->data, bytes_read);
+            // Complete message
+            if (assembly_size_ > 0) {
+                // Append final fragment
+                if (assembly_size_ + bytes_read <= RawMessage::MAX_FRAME_SIZE) {
+                    std::memcpy(assembly_buffer_ + assembly_size_, msg->data, bytes_read);
+                    assembly_size_ += bytes_read;
 
-                // Check if assembled message fits in a single buffer
-                if (assembly_buffer_.size() <= RawMessage::MAX_FRAME_SIZE) {
-                    // Copy assembled message back to buffer
-                    std::memcpy(msg->data, assembly_buffer_.data(), assembly_buffer_.size());
-                    msg->size = static_cast<uint32_t>(assembly_buffer_.size());
+                    // Copy back to message buffer
+                    std::memcpy(msg->data, assembly_buffer_, assembly_size_);
+                    msg->size = static_cast<uint32_t>(assembly_size_);
+                    assembly_size_ = 0;
                 } else {
-                    // Message too large for single buffer - drop it
-                    stats_.oversized_messages.fetch_add(1, std::memory_order_relaxed);
+                    // Too large
+                    cold_stats_.oversized_messages.fetch_add(1, std::memory_order_relaxed);
+                    assembly_size_ = 0;
                     pool.release(msg);
-                    assembly_buffer_.clear();
                     continue;
                 }
-
-                assembly_buffer_.clear();
             } else {
-                // Single-fragment message
                 msg->size = static_cast<uint32_t>(bytes_read);
             }
 
-            // Set metadata
-            msg->timestamp_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-            stats_.messages_received.fetch_add(1, std::memory_order_relaxed);
-            stats_.bytes_received.fetch_add(static_cast<uint64_t>(msg->size), std::memory_order_relaxed);
-            stats_.last_message_timestamp.store(msg->timestamp_ns, std::memory_order_relaxed);
+            // Set TSC timestamp (3ns)
+            msg->timestamp_ns = core::rdtsc();
+
+            // Update statistics
+            hot_stats_.messages_received.fetch_add(1, std::memory_order_relaxed);
+            hot_stats_.bytes_received.fetch_add(msg->size, std::memory_order_relaxed);
+            hot_stats_.last_message_tsc.store(msg->timestamp_ns, std::memory_order_relaxed);
 
             // Queue for parser thread
-            if (!outbound_queue_.try_push(msg)) [[unlikely]] {
-                // Queue full - release buffer
+            if (!hot_.outbound_queue.try_push(msg)) [[unlikely]] {
                 pool.release(msg);
             }
         }
     }
 
-    // Ping loop for keepalive with null checks
+    // Ping loop
     asio::awaitable<void> ping_loop() {
-        auto self = this->shared_from_this();
-
-        while (state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
-            ping_timer_.expires_after(std::chrono::milliseconds(config_.ping_interval_ms));
+        while (hot_.state.load(std::memory_order_acquire) == static_cast<uint32_t>(ConnectionState::CONNECTED)) {
+            ping_timer_.expires_after(std::chrono::milliseconds(cold_.config.ping_interval_ms));
 
             boost::system::error_code ec;
             co_await ping_timer_.async_wait(asio::redirect_error(asio::use_awaitable, ec));
 
-            if (ec || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            if (ec)
                 co_return;
-            }
 
-            // Send ping - check for null streams
+            // Send ping
             websocket::ping_data ping_payload = {};
 
-            if (config_.use_ssl && ws_) {
+            if (cold_.config.use_ssl && ws_) {
                 co_await ws_->async_ping(ping_payload, asio::redirect_error(asio::use_awaitable, ec));
-            } else if (!config_.use_ssl && ws_plain_) {
+            } else if (ws_plain_) {
                 co_await ws_plain_->async_ping(ping_payload, asio::redirect_error(asio::use_awaitable, ec));
-            } else {
-                // Stream was destroyed
-                co_return;
             }
 
-            if (ec) {
+            if (ec)
                 continue;
-            }
 
-            stats_.last_ping_timestamp.store(std::chrono::steady_clock::now().time_since_epoch().count(),
-                                             std::memory_order_relaxed);
+            hot_stats_.last_ping_tsc.store(core::rdtsc(), std::memory_order_relaxed);
 
-            // Cancel any existing pong timer
-            pong_timer_.cancel();
-
-            // Start pong timeout timer
-            pong_timer_.expires_after(std::chrono::milliseconds(config_.pong_timeout_ms));
+            // Wait for pong
+            pong_timer_.expires_after(std::chrono::milliseconds(cold_.config.pong_timeout_ms));
 
             co_await pong_timer_.async_wait(asio::redirect_error(asio::use_awaitable, ec));
 
-            if (!ec) {  // Timer expired without cancellation
-                // Check if we received pong in time
-                auto last_pong = stats_.last_pong_timestamp.load(std::memory_order_relaxed);
-                auto last_ping = stats_.last_ping_timestamp.load(std::memory_order_relaxed);
+            if (!ec) {
+                // Timeout - check if pong received
+                auto last_pong = hot_stats_.last_pong_tsc.load(std::memory_order_relaxed);
+                auto last_ping = hot_stats_.last_ping_tsc.load(std::memory_order_relaxed);
 
                 if (last_pong < last_ping) {
-                    // Pong timeout - reconnect
-                    state_.store(ConnectionState::DISCONNECTED, std::memory_order_release);
-
-                    // Start reconnection
-                    active_tasks_.fetch_add(1, std::memory_order_acq_rel);
-                    asio::co_spawn(
-                        io_context_,
-                        [self, this]() -> asio::awaitable<void> {
-                            co_await disconnect();
-                            co_await connect_with_retry();
-                            active_tasks_.fetch_sub(1, std::memory_order_acq_rel);
-                        },
-                        asio::detached);
+                    // No pong received - disconnect
                     co_return;
                 }
             }
         }
     }
 
-    // Graceful disconnect
+    // Disconnect
     asio::awaitable<void> disconnect() {
-        if (state_.load(std::memory_order_acquire) == ConnectionState::DISCONNECTED) {
-            co_return;
-        }
-
-        state_.store(ConnectionState::DISCONNECTING, std::memory_order_release);
-
-        // Cancel timers
-        ping_timer_.cancel();
-        pong_timer_.cancel();
-        reconnect_timer_.cancel();
-
-        // Close WebSocket gracefully
         boost::system::error_code ec;
-        if (config_.use_ssl && ws_) {
+
+        if (cold_.config.use_ssl && ws_) {
             co_await ws_->async_close(websocket::close_code::normal, asio::redirect_error(asio::use_awaitable, ec));
-        } else if (!config_.use_ssl && ws_plain_) {
+        } else if (ws_plain_) {
             co_await ws_plain_->async_close(websocket::close_code::normal,
                                             asio::redirect_error(asio::use_awaitable, ec));
         }
-
-        state_.store(ConnectionState::DISCONNECTED, std::memory_order_release);
-        on_disconnected();
     }
 
   private:
-    // Core components
-    asio::io_context& io_context_;
-    ssl::context& ssl_context_;
-    WebSocketConfig config_;
-    MessageQueue& outbound_queue_;
+    // Hot data - frequently accessed (single cache line)
+    alignas(64) struct {
+        asio::io_context& io_context;
+        MessageQueue& outbound_queue;
+        std::atomic<uint32_t> state;
+        uint32_t padding;
+    } hot_;
 
-    // WebSocket streams (only one will be active)
+    // Cold data - rarely accessed
+    alignas(64) struct {
+        ssl::context& ssl_context;
+        WebSocketConfig config;
+    } cold_;
+
+    // WebSocket streams
     std::unique_ptr<websocket::stream<beast::ssl_stream<tcp::socket>>> ws_;
     std::unique_ptr<websocket::stream<tcp::socket>> ws_plain_;
 
     // Networking components
     tcp::resolver resolver_;
 
-    // State management
-    std::atomic<ConnectionState> state_;
-    std::atomic<uint32_t> active_tasks_;  // Track active coroutines
-
     // Timers
     asio::steady_timer reconnect_timer_;
     asio::steady_timer ping_timer_;
     asio::steady_timer pong_timer_;
 
-    // Reconnection state
-    uint32_t current_reconnect_delay_ms_;
+    // Fixed-size assembly buffer (no heap allocation)
+    alignas(64) char assembly_buffer_[WebSocketConfig::MAX_MESSAGE_SIZE];
+    size_t assembly_size_ = 0;
 
-    // Message assembly buffer for fragmented messages
-    std::string assembly_buffer_;
-
-    // Statistics - properly cache-aligned to 128 bytes
-    alignas(128) ConnectionStats stats_;
+    // Statistics - separated hot/cold
+    alignas(128) HotStats hot_stats_;
+    alignas(64) ColdStats cold_stats_;
 };
 
 }  // namespace crypto_lob::networking
