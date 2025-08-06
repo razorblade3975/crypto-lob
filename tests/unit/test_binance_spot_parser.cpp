@@ -480,13 +480,14 @@ TEST_F(BinanceSpotParserTest, MemoryPoolExhaustion) {
 }
 
 TEST_F(BinanceSpotParserTest, RAIIGuardBehavior) {
-    const char* invalid_json = R"({invalid})";
+    const char* invalid_json = R"({"invalid": true})";
 
     ParseErrorInfo error;
     auto* msg = parser_->parse_snapshot(invalid_json, "BTCUSDT", receive_time_, &error);
 
     // Message should be null and memory should be automatically cleaned up
     EXPECT_EQ(msg, nullptr);
+    // The JSON is valid but missing required field "lastUpdateId"
     EXPECT_EQ(error.error, ParseError::MISSING_REQUIRED_FIELD);
 
     // Pool should still be usable for new allocations
