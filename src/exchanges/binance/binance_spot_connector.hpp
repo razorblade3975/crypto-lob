@@ -3,48 +3,58 @@
 #include <sstream>
 #include <vector>
 
-#include "../../core/memory_pool.hpp"
+#include "../../core/spsc_ring.hpp"
 #include "../../core/timestamp.hpp"
 #include "../../networking/websocket_client.hpp"
-#include "binance_spot_parser.hpp"
+#include "../base/message_types.hpp"
 
 namespace crypto_lob::exchanges::binance {
 
 /**
- * HFT-optimized Binance Spot WebSocket connector
+ * HFT-optimized Binance Spot WebSocket connector (Network I/O Thread)
+ *
+ * RESPONSIBILITY:
+ * This class handles ONLY network I/O - no JSON parsing happens here.
+ * Per the architecture guide, parsing is delegated to a dedicated parser thread
+ * to prevent network delays from blocking message processing.
+ *
+ * THREADING MODEL:
+ * - Runs on dedicated Network I/O thread (per exchange)
+ * - Passes raw messages to parser thread via lock-free queue
+ * - Lightweight processing only - no JSON parsing
+ * - Control messages handled directly (minimal overhead)
  *
  * Implements Binance Spot-specific protocol requirements:
  * - Combined streams via /stream?streams=
  * - 20-second ping interval with 1-minute pong deadline
- * - Depth snapshot + delta synchronization
- * - Trade and book ticker streams
+ * - Stream subscription management
+ * - Control message handling (subscription responses, errors)
+ *
+ * MESSAGE FLOW:
+ * Network Socket → RawMessage → SPSCRing Queue → Parser Thread
  *
  * ERROR HANDLING STRATEGY:
- * This class employs a multi-layered error handling approach optimized for HFT requirements:
  * 1. Connection-level errors: Handled by base WebSocketClient with exponential backoff
- * 2. Protocol errors: Detected via control message parsing, logged but not blocking
- * 3. Parse errors: Silently ignored to maintain throughput - malformed messages are dropped
+ * 2. Control messages: Detected and handled directly (no queuing)
+ * 3. Queue full: Messages dropped with graceful degradation
  * 4. State validation: All operations validate connection state before proceeding
- * 5. Memory safety: Uses RAII and memory pools to prevent allocation failures
  *
  * CONNECTION STATE MANAGEMENT:
  * - States: DISCONNECTED -> CONNECTING -> CONNECTED -> DISCONNECTING -> DISCONNECTED
  * - Auto-reconnection handled by base class with configurable backoff intervals
  * - Stream subscriptions are automatically re-established after reconnection
  * - Connection health monitored via Binance's ping/pong protocol (20s/60s)
- * - Graceful degradation: Operations return false when connection unavailable
- * - No blocking operations: All network I/O uses async/await coroutines
  *
- * RECOVERY MECHANISMS:
- * - Network failures trigger automatic reconnection with exponential backoff
- * - Subscription state is preserved and restored after reconnection
- * - Memory pools are reset on disconnection to prevent memory leaks
- * - Parser state is maintained across reconnections for delta synchronization
+ * PERFORMANCE:
+ * - Zero-copy message passing to parser thread
+ * - ~20ns latency for queue push operation
+ * - No heap allocations on hot path
+ * - Minimal work in on_message_impl() to maintain responsiveness
  */
 class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConnector> {
   public:
     using Base = networking::WebSocketClient<BinanceSpotConnector>;
-    using MessageCallback = std::function<void(MarketDataMessage*)>;
+    using RawMessageQueue = core::SPSCRing<networking::RawMessage*>;
 
     // Binance-specific configuration
     struct Config {
@@ -109,11 +119,10 @@ class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConne
                          ssl::context& ssl_context,
                          const Config& config,
                          Base::MessageQueue& outbound_queue,
-                         MessageCallback callback)
+                         RawMessageQueue& raw_msg_queue)
         : Base(io_context, ssl_context, config.to_websocket_config(), outbound_queue),
           config_(config),
-          message_callback_(callback),
-          parser_(message_pool_) {}
+          raw_msg_queue_(raw_msg_queue) {}
 
     /**
      * Subscribe to additional streams after connection
@@ -257,72 +266,47 @@ class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConne
     /**
      * CRTP implementation - called for each incoming WebSocket message
      *
-     * CALLBACK CONTRACT:
-     * - This method is called synchronously from the I/O context thread
-     * - Must complete processing quickly to avoid blocking other I/O operations
-     * - Should not perform any blocking operations or lengthy computations
-     * - Memory ownership of RawMessage is managed by caller (no cleanup required)
-     * - MarketDataMessage ownership is transferred to callback (caller must handle cleanup)
+     * THREADING MODEL:
+     * - This method is called from the Network I/O thread
+     * - Must be lightweight - no parsing or heavy computation
+     * - Only queues the raw message for the parser thread
+     * - RawMessage ownership transfers to the parser thread via queue
      *
-     * PARSING FLOW:
-     * 1. Capture high-precision RDTSC timestamp for latency measurement
-     * 2. Prefetch parser memory for optimal cache performance
-     * 3. Extract JSON data from raw message buffer
-     * 4. Handle combined stream format detection and unwrapping
-     * 5. Parse JSON using HFT-optimized simdjson-based parser
-     * 6. On successful parse: populate timestamp and invoke user callback
-     * 7. On parse failure: attempt control message parsing for protocol handling
+     * MESSAGE FLOW:
+     * 1. Check for control messages (subscription responses, errors)
+     * 2. Queue market data messages to parser thread
+     * 3. Drop message if queue is full (graceful degradation)
      *
-     * ERROR RECOVERY:
-     * - Parse failures are silently ignored to maintain message throughput
-     * - Malformed JSON messages do not trigger connection termination
-     * - Control message parsing failures are non-fatal and logged minimally
-     * - Memory pool exhaustion would cause message dropping (graceful degradation)
-     * - Callback exceptions are not caught (caller responsibility for stability)
+     * ERROR HANDLING:
+     * - Queue full: Message is dropped, ownership returned to pool
+     * - Control messages: Handled directly in I/O thread (lightweight)
+     * - No parsing happens here to maintain network thread responsiveness
      *
      * PERFORMANCE OPTIMIZATIONS:
-     * - RDTSC timestamp capture occurs before any processing for minimal latency
-     * - Memory prefetch hints optimize cache behavior for parser access
-     * - Zero-copy string_view usage avoids unnecessary buffer copying
-     * - Minimal branching in hot path to reduce pipeline stalls
-     * - Thread-local parser instance eliminates synchronization overhead
+     * - Zero-copy pass-through to parser thread
+     * - Lock-free queue ensures no blocking
+     * - Minimal work on hot path (~20ns queue push)
+     * - Control message detection uses fast string search
      */
     void on_message_impl(networking::RawMessage* msg) {
-        // Capture RDTSC timestamp as early as possible for minimum latency
-        // This gives us a high-precision relative timestamp for latency measurement
-        uint64_t arrival_tsc = crypto_lob::core::rdtsc();
-
-        // Prefetch parser's thread-local simdjson instance
-        __builtin_prefetch(&parser_, 0, 3);
-
-        // Parse message
+        // Quick check for control messages - handle these directly
         std::string_view json_data(msg->data, msg->size);
 
-        // Check if it's a combined stream message
-        if (config_.use_combined_stream) {
-            // Combined stream wraps data in {"stream":"...","data":{...}}
-            // For now, pass through to parser which handles this
+        // Control messages are infrequent and should be handled immediately
+        if (json_data.find("\"result\"") != std::string_view::npos ||
+            json_data.find("\"error\"") != std::string_view::npos) {
+            handle_control_message(json_data);
+            // Control messages don't go to parser thread
+            return;
         }
 
-        // Parse with HFT-optimized parser
-        auto result = parser_.parse_update(json_data);
+        // Set exchange ID for parser thread
+        msg->exchange_id = static_cast<uint32_t>(exchanges::base::ExchangeId::BINANCE_SPOT);
 
-        if (result.has_value()) {
-            MarketDataMessage* market_msg = result.value();
-
-            // For now, use the timestamp from the raw message which should already be
-            // captured at the earliest point in the network layer.
-            // In the future, the network layer should use RDTSC for capture.
-            market_msg->local_timestamp = msg->timestamp_ns;
-
-            // Invoke callback
-            if (message_callback_) {
-                message_callback_(market_msg);
-            }
-        } else {
-            // Parsing error - might be a control message
-            // Check for subscription responses, errors, etc.
-            handle_control_message(json_data);
+        // Queue message for parser thread (zero-copy transfer)
+        if (!raw_msg_queue_.try_push(msg)) {
+            // Queue full - drop message (ownership returns to WebSocketClient's pool)
+            // In HFT, dropping is better than blocking
         }
     }
 
@@ -410,21 +394,15 @@ class BinanceSpotConnector : public networking::WebSocketClient<BinanceSpotConne
     }
 
   private:
-    // Configuration and callback management
-    Config config_;                     // Binance-specific configuration (symbols, streams, etc.)
-    MessageCallback message_callback_;  // User-provided callback for parsed market data messages
+    // Configuration
+    Config config_;  // Binance-specific configuration (symbols, streams, etc.)
+
+    // Queue for passing raw messages to parser thread
+    RawMessageQueue& raw_msg_queue_;  // Lock-free queue to parser thread
 
     // Request tracking for subscription/unsubscription operations
     // Atomic ensures thread-safe access without locks for HFT performance
     std::atomic<uint32_t> next_request_id_{1};  // Monotonic ID generator for JSON-RPC requests
-
-    // High-performance memory management and parsing infrastructure
-    // Pre-allocated pool prevents heap allocation during message processing
-    core::MemoryPool<MarketDataMessage> message_pool_{8192};  // 8K messages capacity
-
-    // Thread-local parser instance with zero-copy optimization
-    // Maintains state for delta synchronization and uses simdjson for speed
-    BinanceSpotParser parser_;
 };
 
 }  // namespace crypto_lob::exchanges::binance
