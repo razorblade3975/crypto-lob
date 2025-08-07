@@ -19,11 +19,10 @@ The system comprises four primary components:
 
 ### **1.2 Process and Threading Model**
 
-To minimize operating system context-switching overhead and simplify the management of shared state, the application will be contained within a single Linux process. Within this process, a meticulously designed multi-threaded model is employed to achieve parallelism, isolate distinct tasks, and ensure predictable performance.6
-
-The thread allocation strategy is as follows:
+To minimize operating system context-switching overhead and simplify the management of shared state, the application will be contained within a single Linux process. Within this process, a meticulously designed multi-threaded model is employed to achieve parallelism, isolate distinct tasks, and ensure predictable performance.
 
 * **Network I/O Threads**: A dedicated thread will be assigned to manage the network I/O for each connected exchange. This thread will run an Asio io\_context event loop and will be exclusively responsible for non-blocking socket operations. This critical design choice isolates network latency and variability from the core business logic, preventing a network-related delay from stalling order book processing.  
+* **Parser Threads**: A dedicated parser thread will be assigned to parse raw JSON message from each connected exchange. This thread will be exclusively responsible for consuming raw JSON messages from queue and parse them into normalized data.
 * **LOB Worker Threads**: One or more dedicated worker threads will be responsible for processing the normalized data and updating the order books. A common and effective pattern is to shard instruments across these workers (e.g., all BTC-related products are processed by Worker Thread A, while all ETH-related products are handled by Worker Thread B). This sharding ensures that all updates for a single instrument are processed serially by the same thread, which elegantly avoids the need for locks or other complex synchronization mechanisms when modifying a specific order book.  
 * **IPC Publisher Thread**: A single, dedicated thread will be responsible for taking the fully processed market data updates from the LOB Worker Threads and writing them into the shared memory inter-process communication (IPC) channel. This design establishes a single-producer model for the IPC mechanism, which is significantly simpler to implement correctly and offers superior performance compared to multi-producer scenarios.8  
 * **Control/Management Thread**: A single, non-latency-critical thread will handle ancillary tasks such as application startup, graceful shutdown, reloading configuration from the TOML file, and system health monitoring.
@@ -34,15 +33,14 @@ The "hot path" represents the sequence of operations from data receipt to public
 
 The hot path is defined as follows:
 
-1. A network packet containing a WebSocket message arrives at the Network Interface Card (NIC).  
-2. The Linux kernel's network stack processes the packet and delivers the data to the user-space application.  
-3. The dedicated Network I/O thread reads the data from the socket buffer.  
-4. The raw data is passed to the appropriate LOB Worker Thread via a high-performance, lock-free queue.  
-5. The LOB Worker Thread invokes the simdjson parser to deserialize the JSON message.  
-6. The worker thread uses the parsed data to update the corresponding in-memory LOB data structure.  
-7. If this update results in a change to the top-of-book or signifies a trade, an event is generated.  
-8. This event is passed to the IPC Publisher Thread via another lock-free queue.  
-9. The IPC Publisher Thread serializes the top-of-book data and writes it into the shared memory ring buffer, making it available to subscribing processes.
+1. A network packet containing a WebSocket message arrives at the Network Interface Card (NIC).
+2. The Linux kernel's network stack processes the packet and delivers the data to the user-space application.
+3. The dedicated Network I/O thread (e.g. `BinanceSpotConnector`) reads the raw data from the socket buffer.
+4. The raw data is passed to the appropriate Exchange Parser Thread via a high-performance, lock-free queue (`RawMsgQueue`).
+5. The Exchange Parser Thread is exchange-specific (e.g. `BinanceSpotParser`), and it invokes the simdjson parser to deserialize the JSON message from `RawMsgQueue` into another lock-free queue (`ParsedMsgQueue`).
+6. The LOB worker thread uses the parsed data from `ParsedMsgQueue` to update the corresponding in-memory LOB data structure.
+7. If this update results in a change to the top-of-book or signifies a trade, an event is generated. This event is passed to the IPC Publisher Thread via another lock-free queue (`BookEventQueue`).
+8. The IPC Publisher Thread serializes the top-of-book data and writes it into the shared memory ring buffer, making it available to subscribing processes.
 
 Every operation on this path must be meticulously optimized. This includes the strict avoidance of dynamic memory allocation (e.g., new, malloc), virtual function calls which introduce indirection, and any system call that could potentially block.1
 
@@ -77,7 +75,7 @@ For a system where robustness, maintainability, and architectural soundness are 
 
 **Boost.Beast is the recommended library for this project.** As an official part of the Boost C++ Libraries, it adheres to high standards of quality, documentation, and performance. Its design philosophy, which grants the developer full control over threading and memory management, is perfectly aligned with the requirements of an HFT application.18
 
-Underpinning this choice is **Asio**, the de-facto standard for high-performance, cross-platform asynchronous I/O in C++.24 Asio provides the fundamental building blocks for networking and is used in some of the world's fastest financial market systems. The combination of Beast for WebSocket protocol handling and Asio for the underlying I/O provides a powerful, modern, and proven foundation for the network layer.18
+Underpinning this choice is **Asio**, the de-facto standard for high-performance, cross-platform asynchronous I/O in C++. Asio provides the fundamental building blocks for networking and is used in some of the world's fastest financial market systems. The combination of Beast for WebSocket protocol handling and Asio for the underlying I/O provides a powerful, modern, and proven foundation for the network layer.18
 
 The choice of networking library is not merely a performance decision; it is a foundational architectural commitment that defines the application's entire approach to concurrency and error handling. Adopting an Asio-based library like Beast enforces a disciplined, asynchronous-first design from the outset. This is a non-negotiable prerequisite for any low-latency system, as attempting to retrofit asynchronicity onto a synchronous design is a common and critical failure pattern. The architectural integrity, standardized patterns, and maintainability afforded by the Asio ecosystem far outweigh the benchmark-driven performance claims of non-standard alternatives.23
 
@@ -85,7 +83,7 @@ The choice of networking library is not merely a performance decision; it is a f
 
 The networking layer will be built around an Asio io\_context event loop, running on a dedicated, pinned CPU core. All network operations—connecting, handshaking, reading, and writing—will be performed asynchronously to ensure that the I/O thread never blocks.
 
-* **Callbacks vs. Coroutines**: While Beast and Asio support both traditional callback-based programming and modern C++20 coroutines, **coroutines are strongly recommended**. They enable developers to write asynchronous logic that has the linear, readable structure of synchronous code. This dramatically simplifies the implementation of complex sequences of operations (e.g., connect \-\> perform TLS handshake \-\> perform WebSocket handshake \-\> start reading), which helps to avoid "callback hell" and reduces the likelihood of subtle bugs related to object lifetimes and state management.25  
+* **Callbacks vs. Coroutines**: While Beast and Asio support both traditional callback-based programming and modern C++20 coroutines, **coroutines are strongly recommended**. They enable developers to write asynchronous logic that has the linear, readable structure of synchronous code. This dramatically simplifies the implementation of complex sequences of operations (e.g., connect \-\> perform TLS handshake \-\> perform WebSocket handshake \-\> start reading), which helps to avoid "callback hell" and reduces the likelihood of subtle bugs related to object lifetimes and state management.  
 * **Underlying I/O Multiplexing**: On Linux, Asio transparently uses the epoll system call facility. epoll is a highly efficient and scalable I/O event notification mechanism capable of managing thousands of concurrent connections with minimal overhead.27 While the newer  
   io\_uring interface can offer even lower latency by further reducing system call overhead 28, its API is more complex and less mature. The pragmatic and robust approach is to build upon Asio's  
   epoll-based backend. The architecture should be designed to decouple the application logic from the specific I/O mechanism, which would facilitate a future migration to an io\_uring-based Asio backend if desired.
