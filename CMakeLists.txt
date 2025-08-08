@@ -135,14 +135,6 @@ if(BUILD_TESTS)
     endif()
 endif()
 
-# Benchmarks
-if(BUILD_BENCHMARKS)
-    find_package(benchmark REQUIRED)
-    find_package(jemalloc QUIET)  # Optional for extended benchmarks
-    
-    # Add benchmarks subdirectory
-    add_subdirectory(tests/benchmarks)
-endif()
 
 # Install targets
 install(TARGETS crypto-lob
