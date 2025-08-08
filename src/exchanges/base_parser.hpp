@@ -9,7 +9,7 @@
 #include <type_traits>
 
 #include "../core/memory_pool.hpp"
-#include "../exchanges/base/message_types.hpp"
+#include "message_types.hpp"
 
 namespace crypto_lob::parsing {
 

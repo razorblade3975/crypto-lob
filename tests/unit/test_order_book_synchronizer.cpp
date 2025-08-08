@@ -5,7 +5,7 @@
 
 #include "../../src/core/price.hpp"
 #include "../../src/core/timestamp.hpp"
-#include "../../src/exchanges/base/message_types.hpp"
+#include "../../src/exchanges/message_types.hpp"
 #include "../../src/orderbook/order_book.hpp"
 #include "../../src/orderbook/order_book_synchronizer.hpp"
 #include "../../src/orderbook/price_level.hpp"

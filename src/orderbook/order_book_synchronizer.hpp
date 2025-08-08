@@ -6,7 +6,7 @@
 #include "core/enums.hpp"
 #include "core/price.hpp"
 #include "core/timestamp.hpp"
-#include "exchanges/base/message_types.hpp"
+#include "exchanges/message_types.hpp"
 #include "orderbook/order_book.hpp"
 #include "orderbook/price_level.hpp"
 

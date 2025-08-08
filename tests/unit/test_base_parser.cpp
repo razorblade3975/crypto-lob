@@ -3,8 +3,8 @@
 #include <thread>
 
 #include <core/memory_pool.hpp>
+#include <exchanges/base_parser.hpp>
 #include <gtest/gtest.h>
-#include <parsing/base_parser.hpp>
 
 using namespace crypto_lob::parsing;
 using namespace crypto_lob::core;

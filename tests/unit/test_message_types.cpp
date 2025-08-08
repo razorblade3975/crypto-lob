@@ -4,7 +4,7 @@
 
 #include <gtest/gtest.h>
 
-#include "exchanges/base/message_types.hpp"
+#include "exchanges/message_types.hpp"
 
 using namespace crypto_lob::exchanges::base;
 using namespace crypto_lob::core;

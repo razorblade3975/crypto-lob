@@ -61,18 +61,6 @@ Furthermore, the system design must account for the full data lifecycle, which i
 
 The networking layer is the gateway for all market data into the system. Its design must be robust, highly asynchronous, and optimized for minimal latency. The choice of technology at this layer dictates the application's entire concurrency model and is a critical architectural decision.
 
-### **2.1 Selecting a C++ WebSocket Library**
-
-A comparative analysis of leading C++ WebSocket libraries is essential. The primary candidates are evaluated based on performance, dependencies, programming model, and maturity.
-
-* **Boost.Beast**: A header-only library built directly on the Boost.Asio networking framework.18 It is designed for high-performance, asynchronous applications and provides developers with fine-grained control over critical resources like memory buffers and threads. Its integration with the widely-used Asio library makes it a strong contender for robust systems.  
-* **WebSocket++**: Another mature, header-only library that can use Boost.Asio or standalone Asio as its network transport layer.19 Its performance is largely comparable to that of Boost.Beast, as both delegate the underlying I/O operations to Asio.20  
-* **uWebSockets**: This library is frequently cited in benchmarks for its exceptionally low latency and memory footprint.21 However, it uses a bespoke, non-Asio API. The validity of its benchmark results for real-world scenarios has been questioned, and it prioritizes raw speed over a standardized, maintainable programming model.23
-
-For a system where robustness, maintainability, and architectural soundness are paramount, an Asio-based library is the superior choice. The established patterns and strong community support of the Asio ecosystem provide a more solid foundation than a library optimized purely for benchmark performance.
-
-### **2.2 Recommended Implementation: Boost.Beast with Asio**
-
 **Boost.Beast is the recommended library for this project.** As an official part of the Boost C++ Libraries, it adheres to high standards of quality, documentation, and performance. Its design philosophy, which grants the developer full control over threading and memory management, is perfectly aligned with the requirements of an HFT application.18
 
 Underpinning this choice is **Asio**, the de-facto standard for high-performance, cross-platform asynchronous I/O in C++. Asio provides the fundamental building blocks for networking and is used in some of the world's fastest financial market systems. The combination of Beast for WebSocket protocol handling and Asio for the underlying I/O provides a powerful, modern, and proven foundation for the network layer.18
@@ -118,17 +106,6 @@ This section addresses the pivotal task of parsing incoming JSON messages from t
 
 Cryptocurrency exchanges almost universally employ JSON as the data format for their real-time WebSocket APIs.3 As a text-based format, parsing JSON requires significant computational work, including string manipulation, validation of syntax, and conversion of text representations into native C++ data types (e.g., strings to integers or floating-point numbers). This process is inherently more expensive than processing a compact binary protocol. For a market data feed handler processing tens of thousands of messages per second, the choice of JSON library is a first-order determinant of overall system performance.35
 
-### **3.2 Comparative Analysis of High-Speed JSON Libraries**
-
-A careful evaluation of available C++ JSON libraries is necessary to select the optimal tool for this performance-critical task.
-
-* **RapidJSON**: For many years, RapidJSON was the industry standard for high-performance JSON processing in C++. It provides both SAX (event-based) and DOM (tree-based) parsing models and is well-regarded for its speed and efficient memory usage.35  
-* **simdjson**: This modern library has redefined the performance expectations for JSON parsing. It leverages SIMD (Single Instruction, Multiple Data) CPU instructions to process JSON data at rates of multiple gigabytes per second. This makes it orders of magnitude faster than traditional parsers like RapidJSON, while still performing full validation of the JSON structure and UTF-8 encoding.39  
-* **Glaze**: Another contemporary, high-performance library that claims to be the fastest available for direct-to-struct deserialization. It achieves its speed by avoiding the creation of an intermediate DOM representation, instead parsing data directly from the JSON text into the memory of C++ objects. This approach is an excellent match for the application's need to convert incoming messages into a fixed internal format.41  
-* **nlohmann/json**: This library is widely praised for its exceptional, modern C++ API that is intuitive and easy to use. However, its focus is on developer ergonomics rather than raw performance. Its speed is not in the same category as simdjson or RapidJSON, making it unsuitable for the hot path of an HFT application.37 It remains a viable choice for non-performance-critical tasks, such as parsing the initial configuration file.
-
-### **3.3 Recommended Implementation: simdjson with a Writer Fallback**
-
 For parsing the high-volume stream of incoming market data, **simdjson is the unequivocal choice.** Its revolutionary parsing speed provides a significant and measurable competitive advantage, directly reducing the "time-to-book" for every market data update.39
 
 A key consideration is that simdjson is a highly specialized tool designed exclusively for parsing; it does not provide functionality for serializing C++ data structures back into JSON strings.43 The application, however, must send JSON-formatted messages to the exchanges to manage subscriptions. This creates an asymmetric performance requirement. To address this, a hybrid strategy is optimal: use
@@ -139,14 +116,7 @@ simdjson for the performance-critical ingress path, and a secondary, "fast enoug
 
 A critical, non-obvious optimization for achieving simdjson's advertised performance is the reuse of the parser object. User reports and performance analysis have shown that instantiating a new simdjson::ondemand::parser object for each individual message introduces significant overhead from repeated memory allocation and deallocation, which can severely degrade performance and even become the dominant factor in the processing loop.36
 
-The correct implementation pattern is to ensure that each LOB worker thread owns a single, long-lived simdjson parser object. For each incoming message, the thread should call the parser.iterate(message) method on its existing parser instance. This pattern allows the parser to reuse its internal memory buffers across many invocations, effectively eliminating dynamic memory allocation from the parsing hot path and unlocking the full speed of the SIMD-powered engine.36 This highlights a crucial principle in low-latency development: understanding and correctly utilizing a tool's memory model is often as important as the algorithm the tool implements.
-
-| Library | Parsing Speed (GB/s) | Serialization Support | API Style / Ease of Use | Key Feature |
-| :---- | :---- | :---- | :---- | :---- |
-| **simdjson** | Exceptional (up to 7 GB/s) 39 | No (Parser-only) 43 | On-demand API, requires careful use | SIMD-accelerated parsing |
-| **Glaze** | Exceptional (claims faster than simdjson for direct-to-struct) 41 | Yes | Direct-to-struct mapping, minimal boilerplate | Zero-overhead, no intermediate representation |
-| **RapidJSON** | High (approx. 0.5 GB/s) 40 | Yes | SAX/DOM APIs, C-style | Mature, balanced performance for read/write |
-| **nlohmann/json** | Moderate (approx. 0.1 GB/s) 40 | Yes | Excellent, modern C++ API 37 | Unmatched ease of use and expressiveness |
+The correct implementation pattern is to ensure that each parser worker thread owns a single, long-lived simdjson parser object. For each incoming message, the thread should call the parser.iterate(message) method on its existing parser instance. This pattern allows the parser to reuse its internal memory buffers across many invocations, effectively eliminating dynamic memory allocation from the parsing hot path and unlocking the full speed of the SIMD-powered engine.36 This highlights a crucial principle in low-latency development: understanding and correctly utilizing a tool's memory model is often as important as the algorithm the tool implements.
 
 ## **Section 4: The Heart of the System: The Limit Order Book Engine**
 
@@ -154,13 +124,9 @@ The Limit Order Book (LOB) engine is the system's analytical core. It is respons
 
 ### **4.1 Data Structures for an HFT-Grade Order Book**
 
-A naive implementation of an order book, such as std::map\<double, double\>, is wholly inadequate for HFT. It suffers from the imprecision of floating-point keys and lacks the necessary granularity to represent individual orders at each price level. A more common approach, std::map\<Price, std::list\<Order\>\>, provides O(log N) access to price levels and O(1) insertion/deletion of orders within a level.44 However, the node-based memory allocation of
+A naive implementation of an order book, such as std::map\<double, double\>, is wholly inadequate for HFT. It suffers from the imprecision of floating-point keys and lacks the necessary granularity to represent individual orders at each price level. A more common approach, std::map\<Price, std::list\<Order\>\>, provides O(log N) access to price levels and O(1) insertion/deletion of orders within a level.44 However, the node-based memory allocation of std::map and the pointer-chasing nature of std::list lead to poor CPU cache locality, creating performance bottlenecks that are unacceptable in a low-latency environment.
 
-std::map and the pointer-chasing nature of std::list lead to poor CPU cache locality, creating performance bottlenecks that are unacceptable in a low-latency environment.45
-
-A state-of-the-art implementation requires a hybrid data structure approach, combining multiple structures where each is optimized for a specific type of query. The goal is to achieve O(1) or O(log N) complexity for all critical operations. The most effective design, described in multiple analyses of HFT systems, involves a balanced binary search tree of price levels, with each level containing a queue of orders, and a separate hash map for direct order access.47 This demonstrates a key design principle: one does not model the "order book" as a single entity, but rather models the
-
-*operations* required and creates the necessary data structures and indexes to make each operation fast.
+A state-of-the-art implementation requires a hybrid data structure approach, combining multiple structures where each is optimized for a specific type of query. The goal is to achieve O(1) or O(log N) complexity for all critical operations. The most effective design, described in multiple analyses of HFT systems, involves a balanced binary search tree of price levels, with each level containing a queue of orders, and a separate hash map for direct order access.47 This demonstrates a key design principle: one does not model the "order book" as a single entity, but rather models the *operations* required and creates the necessary data structures and indexes to make each operation fast.
 
 ### **4.2 Recommended Data Structure and Implementation**
 
@@ -176,7 +142,7 @@ The recommended implementation synthesizes these principles into a cohesive and 
 
 ### **4.3 Logic for Order Book Reconstruction**
 
-The process of building and maintaining an accurate order book from a differential data feed is notoriously complex and has zero tolerance for error. A single out-of-sequence message or a mishandled snapshot can lead to a permanently corrupt book state, causing any dependent trading algorithm to operate on phantom data. The industry-standard best practice, as detailed in the Binance API documentation, must be followed precisely.17
+The process of building and maintaining an accurate order book from a differential data feed is notoriously complex and has zero tolerance for error. A single out-of-sequence message or a mishandled snapshot can lead to a permanently corrupt book state, causing any dependent trading algorithm to operate on phantom data. The industry-standard best practice, as detailed in the Binance API documentation, must be followed precisely.
 
 The algorithm is as follows:
 
@@ -207,65 +173,6 @@ This will be mitigated through several techniques:
 | Sparse Array \+ Linked List | O(1) | O(1) | O(N) \- requires search | O(M) in worst case | Good (contiguous array) but list is poor |
 | **Recommended Hybrid Structure** | **O(log N)** | **O(log N)** | **O(1)** (via unordered\_map) | **O(1)** | **Good** (intrusive list, pooled allocators) |
 
-#### 
-
-### **Advanced LOB Design: A Deep Dive into Performance Engineering**
-
-#### The design of a high-frequency trading (HFT) LOB is an exercise in optimization at every level, from data structure selection to memory layout. The goal is to eliminate any source of non-determinism or overhead from the critical path, particularly dynamic memory allocation and poor CPU cache utilization.\[2\]
-
-#### **1\. The Zero-Allocation Memory Model**
-
-The single most important principle for achieving predictable low latency on the "hot path" is the complete elimination of dynamic memory allocation calls like `malloc` or `new`.\[3, 4\] These system calls are slow and, more importantly, have unpredictable execution times, introducing jitter that is unacceptable in HFT.\[1\]
-
-To achieve this, we employ a custom memory management strategy centered around a Memory Pool or Slab Allocator.\[3, 5\]
-
-* Concept: At application startup, a large, contiguous block of memory is pre-allocated. This block is then carved up and managed by our application directly. When a new `Order` or `PriceLevel` object is needed, memory is taken from this pool instead of from the operating system. When an object is deleted, its memory is returned to the pool for reuse, not freed back to the OS.\[6\]  
-* Implementation: A simple and highly effective approach is a free list-based pool allocator. The pool maintains a linked list of available memory chunks.  
-  * Allocation: Requesting a new `Order` object is an O(1) operation: simply pop a pointer to a free memory block from the head of the free list.\[6\]  
-  * Deallocation: Releasing an `Order` is also O(1): push its memory block pointer back onto the head of the free list.\[3\]  
-* Placement `new`: Once a raw memory block is acquired from the pool, the C++ object is constructed in that specific location using `placement new`. This invokes the object's constructor without performing another memory allocation.\[2\] The object's lifetime is then managed manually, with an explicit destructor call before the memory is returned to the pool.
-
-This strategy ensures that all memory management on the critical path is reduced to simple, deterministic pointer manipulations, completely avoiding kernel-level system calls.
-
-#### **2\. Cache-Friendly Data Structures: Intrusiveness and Contiguity**
-
-#### Standard library containers like `std::list` or `std::map` are "non-intrusive," meaning they allocate separate node objects to hold the user's data. This results in scattered memory allocations and pointer-chasing during iteration, which is devastating for CPU cache performance.\[7\] The solution is to use intrusive data structures and prioritize contiguous memory layouts.
-
-#### Intrusive Linked Lists: Instead of `std::list<Order>` at each price level, we embed the list's linkage pointers directly within the `Order` struct itself.\[7, 8\]   struct Order {     //... order data (ID, quantity, timestamp)
-
-####     Order\* next\_order; // Intrusive pointer
-
-####     Order\* prev\_order; // Intrusive pointer
-
-#### };
-
-* ####  This has a profound impact on cache locality. All `Order` objects are allocated from our contiguous memory pool. Linking them together intrusively means that when traversing the list of orders at a price level, the CPU is more likely to find the next `Order` object already in its cache, as they were allocated close to each other in memory.\[9\] This eliminates the pointer indirection inherent in `std::list`, which would have to fetch a separate `std::list::node` object before getting to the actual `Order` data.\[7\] 
-
-* #### Contiguous Price Levels: While `std::map` provides O(log N) access, its node-based structure also suffers from poor cache locality. A more cache-friendly approach for storing the price levels themselves is a sorted `std::vector` or a sparse array.\[10\] 
-
-  * #### `std::vector` Approach: Using two sorted `std::vector`s (one for bids, one for asks) to hold `PriceLevel` objects ensures that all price levels are stored in a single, contiguous block of memory.\[10\]
-
-    * #### Lookup: Finding a price level becomes a binary search (O(log N)). However, in practice, most activity occurs near the best bid and offer (BBO). A linear search starting from the inside of the book is often faster because it benefits from better branch prediction and cache performance.\[10\]
-
-    * #### Insertion/Deletion: This becomes the main drawback, as it may require shifting elements within the vector (an O(N) operation). However, `memcpy` operations on contiguous memory are highly optimized and can be faster than a series of scattered memory accesses required by tree rebalancing.\[10\]
-
-#### **3\. The Final LOB Design Synthesis**
-
-#### Combining these principles gives us a complete, high-performance LOB design:
-
-1. #### `Order` Struct: A simple, POD-like struct containing core data (`order_id`, `quantity`, etc.) and the intrusive `next_order` and `prev_order` pointers.\[8\]
-
-2. #### `PriceLevel` Struct: Contains aggregate data for a price level (e.g., `total_volume`) and head/tail pointers to the intrusive list of `Order`s at that level.
-
-3. #### Book-Side Containers: Two `std::vector<PriceLevel>` containers, one for bids (sorted descending) and one for asks (sorted ascending). This ensures price levels are stored contiguously.\[10\]
-
-4. #### O(1) Cancellation Map: A `std::unordered_map<uint64_t, Order*>` provides immediate access to any order by its ID for O(1) cancellation, a critical and frequent operation.\[11, 12\]
-
-5. #### Unified Memory Management: A single, master Slab Allocator is created at startup. It manages pools of fixed-size memory blocks for `Order` objects. All `Order`s, regardless of which `PriceLevel` they belong to, are allocated from this single source.\[5\] The `std::vector`s for `PriceLevel`s and the `std::unordered_map` will use their default allocators, which is acceptable as they perform large block allocations infrequently, not on the per-message hot path.
-
-#### This design ensures that every operation on the critical path—adding, modifying, or canceling an order—is a sequence of deterministic, cache-friendly memory accesses with zero calls to the system's general-purpose allocator. This is the foundation for building a LOB engine that is not just fast on average, but predictably fast under load.
-
-#### 
 
 #### **Works cited**
 

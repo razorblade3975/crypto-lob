@@ -5,8 +5,8 @@
 #include <gtest/gtest.h>
 
 #include "core/memory_pool.hpp"
-#include "exchanges/base/message_types.hpp"
-#include "exchanges/binance/binance_spot_parser.hpp"
+#include "exchanges/binance_spot_parser.hpp"
+#include "exchanges/message_types.hpp"
 
 using namespace crypto_lob::exchanges::binance;
 using namespace crypto_lob::parsing;

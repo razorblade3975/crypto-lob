@@ -6,13 +6,13 @@
 #include <string_view>
 #include <thread>
 
-#include "../../core/enums.hpp"
-#include "../../core/memory_pool.hpp"
-#include "../../core/spsc_ring.hpp"
-#include "../../core/timestamp.hpp"
-#include "../../exchanges/base/message_types.hpp"
-#include "../../networking/raw_message_pool.hpp"
-#include "../../parsing/base_parser.hpp"
+#include "../core/enums.hpp"
+#include "../core/memory_pool.hpp"
+#include "../core/spsc_ring.hpp"
+#include "../core/timestamp.hpp"
+#include "message_types.hpp"
+#include "../networking/raw_message_pool.hpp"
+#include "base_parser.hpp"
 
 #ifdef __linux__
 #include <pthread.h>
