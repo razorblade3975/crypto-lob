@@ -91,5 +91,7 @@ Testing/
 .claude/
 
 # Local development files
-TODO.md
 CLAUDE.md
+
+# Reference files for claude code
+ref/
