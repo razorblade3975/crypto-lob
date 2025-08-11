@@ -53,7 +53,7 @@ TEST_F(BookSideTest, BasicOperations) {
     EXPECT_EQ(ask_side_->best(), nullptr);
 
     // Add first level
-    auto result = ask_side_->apply_update(Price(100.0), 1000, 1);
+    auto result = ask_side_->apply_update(Price(100000000000), 1000, 1);
     EXPECT_EQ(result.delta_qty, 1000);
     EXPECT_TRUE(result.is_new_level);
     EXPECT_TRUE(result.affects_top_n);
@@ -61,11 +61,11 @@ TEST_F(BookSideTest, BasicOperations) {
 
     EXPECT_FALSE(ask_side_->empty());
     EXPECT_EQ(ask_side_->size(), 1);
-    EXPECT_EQ(ask_side_->best()->price, Price(100.0));
+    EXPECT_EQ(ask_side_->best()->price, Price(100000000000));
     EXPECT_EQ(ask_side_->best()->quantity, 1000);
 
     // Update quantity
-    result = ask_side_->apply_update(Price(100.0), 2000, 2);
+    result = ask_side_->apply_update(Price(100000000000), 2000, 2);
     EXPECT_EQ(result.delta_qty, 1000);
     EXPECT_FALSE(result.is_new_level);
     EXPECT_TRUE(result.affects_top_n);
@@ -74,7 +74,7 @@ TEST_F(BookSideTest, BasicOperations) {
     EXPECT_EQ(ask_side_->best()->quantity, 2000);
 
     // Remove level
-    result = ask_side_->apply_update(Price(100.0), 0, 3);
+    result = ask_side_->apply_update(Price(100000000000), 0, 3);
     EXPECT_EQ(result.delta_qty, -2000);
     EXPECT_FALSE(result.is_new_level);
     EXPECT_TRUE(result.affects_top_n);
@@ -85,75 +85,102 @@ TEST_F(BookSideTest, BasicOperations) {
 
 TEST_F(BookSideTest, PriceOrdering) {
     // Test ask side (ascending) - using high-value asset prices
-    ask_side_->apply_update(Price(50200.0), 300, 1);
-    ask_side_->apply_update(Price(50000.0), 100, 2);
-    ask_side_->apply_update(Price(50100.0), 200, 3);
+    ask_side_->apply_update(Price(50200000000000), 300, 1);
+    ask_side_->apply_update(Price(50000000000000), 100, 2);
+    ask_side_->apply_update(Price(50100000000000), 200, 3);
 
     EXPECT_EQ(ask_side_->size(), 3);
-    EXPECT_EQ(ask_side_->best()->price, Price(50000.0));
+    EXPECT_EQ(ask_side_->best()->price, Price(50000000000000));
 
     std::vector<PriceLevel> levels;
     ask_side_->get_top_n(10, std::back_inserter(levels));
 
     EXPECT_EQ(levels.size(), 3);
-    EXPECT_EQ(levels[0].price, Price(50000.0));
-    EXPECT_EQ(levels[1].price, Price(50100.0));
-    EXPECT_EQ(levels[2].price, Price(50200.0));
+    EXPECT_EQ(levels[0].price, Price(50000000000000));
+    EXPECT_EQ(levels[1].price, Price(50100000000000));
+    EXPECT_EQ(levels[2].price, Price(50200000000000));
 
     // Test bid side (descending)
-    bid_side_->apply_update(Price(49800.0), 300, 1);
-    bid_side_->apply_update(Price(50000.0), 100, 2);
-    bid_side_->apply_update(Price(49900.0), 200, 3);
+    bid_side_->apply_update(Price(49800000000000), 300, 1);
+    bid_side_->apply_update(Price(50000000000000), 100, 2);
+    bid_side_->apply_update(Price(49900000000000), 200, 3);
 
-    EXPECT_EQ(bid_side_->best()->price, Price(50000.0));
+    EXPECT_EQ(bid_side_->best()->price, Price(50000000000000));
 
     levels.clear();
     bid_side_->get_top_n(10, std::back_inserter(levels));
 
-    EXPECT_EQ(levels[0].price, Price(50000.0));
-    EXPECT_EQ(levels[1].price, Price(49900.0));
-    EXPECT_EQ(levels[2].price, Price(49800.0));
+    EXPECT_EQ(levels[0].price, Price(50000000000000));
+    EXPECT_EQ(levels[1].price, Price(49900000000000));
+    EXPECT_EQ(levels[2].price, Price(49800000000000));
 }
 
 TEST_F(BookSideTest, TopNTracking) {
     ask_side_->set_top_n_depth(3);
 
-    // Fill top 3 - using low-value token prices to test LOW_SCALE
-    ask_side_->apply_update(Price(0.001), 100, 1);
-    ask_side_->apply_update(Price(0.0011), 100, 2);
-    ask_side_->apply_update(Price(0.0012), 100, 3);
+    // Fill top 3 - using low-value token prices
+    ask_side_->apply_update(Price::from_string("0.001"), 100, 1);
+    ask_side_->apply_update(Price::from_string("0.0011"), 100, 2);
+    ask_side_->apply_update(Price::from_string("0.0012"), 100, 3);
 
-    EXPECT_EQ(ask_side_->get_nth_price(), Price(0.0012));
+    EXPECT_EQ(ask_side_->get_nth_price(), Price::from_string("0.0012"));
 
     // Add outside top 3
-    auto result = ask_side_->apply_update(Price(0.0013), 100, 4);
+    auto result = ask_side_->apply_update(Price::from_string("0.0013"), 100, 4);
     EXPECT_FALSE(result.affects_top_n);
 
     // Add inside top 3
-    result = ask_side_->apply_update(Price(0.0009), 100, 5);
+    result = ask_side_->apply_update(Price::from_string("0.0009"), 100, 5);
     EXPECT_TRUE(result.affects_top_n);
-    EXPECT_EQ(ask_side_->get_nth_price(), Price(0.0011));
+    EXPECT_EQ(ask_side_->get_nth_price(), Price::from_string("0.0011"));
 }
 
 TEST_F(BookSideTest, KthLevel) {
     // Test ask side - mid-range asset
-    ask_side_->apply_update(Price(10.0), 100, 1);
-    ask_side_->apply_update(Price(10.1), 200, 2);
-    ask_side_->apply_update(Price(10.2), 300, 3);
+    // Use from_string for proper decimal conversion
+    ask_side_->apply_update(Price::from_string("10.0"), 100, 1);
+    ask_side_->apply_update(Price::from_string("10.1"), 200, 2);
+    ask_side_->apply_update(Price::from_string("10.2"), 300, 3);
 
-    EXPECT_EQ(ask_side_->kth_level(0)->price, Price(10.0));
-    EXPECT_EQ(ask_side_->kth_level(1)->price, Price(10.1));
-    EXPECT_EQ(ask_side_->kth_level(2)->price, Price(10.2));
+    // Debug: Check size first
+    EXPECT_EQ(ask_side_->size(), 3u);
+
+    // Test each level with null checks
+    auto* level0 = ask_side_->kth_level(0);
+    ASSERT_NE(level0, nullptr) << "Level 0 should not be null";
+    EXPECT_EQ(level0->price, Price::from_string("10.0"));
+
+    auto* level1 = ask_side_->kth_level(1);
+    ASSERT_NE(level1, nullptr) << "Level 1 should not be null";
+    EXPECT_EQ(level1->price, Price::from_string("10.1"));
+
+    auto* level2 = ask_side_->kth_level(2);
+    ASSERT_NE(level2, nullptr) << "Level 2 should not be null";
+    EXPECT_EQ(level2->price, Price::from_string("10.2"));
+
     EXPECT_EQ(ask_side_->kth_level(3), nullptr);
 
     // Test bid side (descending order)
-    bid_side_->apply_update(Price(10.0), 100, 1);
-    bid_side_->apply_update(Price(9.9), 200, 2);
-    bid_side_->apply_update(Price(9.8), 300, 3);
+    bid_side_->apply_update(Price::from_string("10.0"), 100, 1);
+    bid_side_->apply_update(Price::from_string("9.9"), 200, 2);
+    bid_side_->apply_update(Price::from_string("9.8"), 300, 3);
 
-    EXPECT_EQ(bid_side_->kth_level(0)->price, Price(10.0));
-    EXPECT_EQ(bid_side_->kth_level(1)->price, Price(9.9));
-    EXPECT_EQ(bid_side_->kth_level(2)->price, Price(9.8));
+    // Debug: Check size first
+    EXPECT_EQ(bid_side_->size(), 3u);
+
+    // Test each level with null checks
+    auto* bid_level0 = bid_side_->kth_level(0);
+    ASSERT_NE(bid_level0, nullptr) << "Bid level 0 should not be null";
+    EXPECT_EQ(bid_level0->price, Price::from_string("10.0"));
+
+    auto* bid_level1 = bid_side_->kth_level(1);
+    ASSERT_NE(bid_level1, nullptr) << "Bid level 1 should not be null";
+    EXPECT_EQ(bid_level1->price, Price::from_string("9.9"));
+
+    auto* bid_level2 = bid_side_->kth_level(2);
+    ASSERT_NE(bid_level2, nullptr) << "Bid level 2 should not be null";
+    EXPECT_EQ(bid_level2->price, Price::from_string("9.8"));
+
     EXPECT_EQ(bid_side_->kth_level(3), nullptr);
 }
 
@@ -221,7 +248,8 @@ TEST_F(BookSideTest, DISABLED_PerformanceBenchmark) {
 
     // Warm up - using a typical asset price range
     for (int i = 0; i < 1000; ++i) {
-        ask_side_->apply_update(Price(100.0 + i * 0.01), 100, i);
+        // Use raw values: 100.0 = 100000000000, 0.01 = 10000000
+        ask_side_->apply_update(Price(100000000000 + i * 10000000), 100, i);
     }
     ask_side_->clear();
 
@@ -296,7 +324,7 @@ TEST_F(BookSideTest, HashTreeCoherence) {
 // Test edge cases
 TEST_F(BookSideTest, EdgeCases) {
     // Zero quantity on empty book
-    auto result = ask_side_->apply_update(Price(100.0), 0, 1);
+    auto result = ask_side_->apply_update(Price(100000000000), 0, 1);
     EXPECT_EQ(result.delta_qty, 0);
     EXPECT_FALSE(result.is_new_level);
     EXPECT_FALSE(result.affects_top_n);
@@ -304,20 +332,20 @@ TEST_F(BookSideTest, EdgeCases) {
 
     // Very large quantity (avoid UB with safe value)
     const uint64_t big_qty = std::numeric_limits<uint64_t>::max() / 2;
-    result = ask_side_->apply_update(Price(100.0), big_qty, 2);
+    result = ask_side_->apply_update(Price(100000000000), big_qty, 2);
     EXPECT_EQ(result.delta_qty, static_cast<int64_t>(big_qty));
 
     // Update with same quantity
-    result = ask_side_->apply_update(Price(100.0), big_qty, 3);
+    result = ask_side_->apply_update(Price(100000000000), big_qty, 3);
     EXPECT_EQ(result.delta_qty, 0);
 }
 
 // Additional test: Duplicate price updates
 TEST_F(BookSideTest, DuplicatePriceUpdates) {
     // Insert same price multiple times with different quantities
-    ask_side_->apply_update(Price(100.0), 1000, 1);
-    ask_side_->apply_update(Price(100.0), 2000, 2);
-    ask_side_->apply_update(Price(100.0), 3000, 3);
+    ask_side_->apply_update(Price(100000000000), 1000, 1);
+    ask_side_->apply_update(Price(100000000000), 2000, 2);
+    ask_side_->apply_update(Price(100000000000), 3000, 3);
 
     EXPECT_EQ(ask_side_->size(), 1);               // Only one node
     EXPECT_EQ(ask_side_->best()->quantity, 3000);  // Latest quantity
@@ -330,29 +358,34 @@ TEST_F(BookSideTest, TopNDepthChange) {
 
     // Fill 10 levels - using a mid-range asset with realistic tick sizes
     for (int i = 0; i < 10; ++i) {
-        ask_side_->apply_update(Price(100.0 + i * 0.1), 100, i);
+        // Use raw values: 100.0 = 100000000000, 0.1 = 100000000
+        ask_side_->apply_update(Price(100000000000 + i * 100000000), 100, i);
     }
 
-    EXPECT_EQ(ask_side_->get_nth_price(), Price(100.4));
+    // 100.4 = 100400000000
+    EXPECT_EQ(ask_side_->get_nth_price(), Price(100400000000));
 
     // Change depth to 8
     ask_side_->set_top_n_depth(8);
-    EXPECT_EQ(ask_side_->get_nth_price(), Price(100.7));
+    // 100.7 = 100700000000
+    EXPECT_EQ(ask_side_->get_nth_price(), Price(100700000000));
 
     // Test affects_top_n with new depth
-    auto result = ask_side_->apply_update(Price(100.6), 200, 11);
+    // 100.6 = 100600000000
+    auto result = ask_side_->apply_update(Price(100600000000), 200, 11);
     EXPECT_TRUE(result.affects_top_n);
 
-    result = ask_side_->apply_update(Price(100.9), 200, 12);
+    // 100.9 = 100900000000
+    result = ask_side_->apply_update(Price(100900000000), 200, 12);
     EXPECT_FALSE(result.affects_top_n);
 }
 
 // Additional test: Iterator stability
 TEST_F(BookSideTest, IteratorStability) {
     // Add some levels with different price scales
-    ask_side_->apply_update(Price(100.0), 100, 1);
-    ask_side_->apply_update(Price(100.5), 200, 2);
-    ask_side_->apply_update(Price(101.0), 300, 3);
+    ask_side_->apply_update(Price(100000000000), 100, 1);
+    ask_side_->apply_update(Price(100500000000), 200, 2);  // 100.5
+    ask_side_->apply_update(Price(101000000000), 300, 3);  // 101.0
 
     // Get pointer to middle node
     const PriceLevelNode* middle_node = ask_side_->kth_level(1);
@@ -360,14 +393,14 @@ TEST_F(BookSideTest, IteratorStability) {
     Price original_price = middle_node->price;
 
     // Update a different level
-    ask_side_->apply_update(Price(100.0), 150, 4);
+    ask_side_->apply_update(Price(100000000000), 150, 4);
 
     // Verify pointer still valid and points to same price
     EXPECT_EQ(middle_node->price, original_price);
     EXPECT_EQ(middle_node->quantity, 200);
 
     // Update the same level
-    ask_side_->apply_update(Price(100.5), 250, 5);
+    ask_side_->apply_update(Price(100500000000), 250, 5);  // 100.5
 
     // Pointer still valid, quantity updated
     EXPECT_EQ(middle_node->price, original_price);
@@ -390,24 +423,24 @@ TEST_F(BookSideTest, PriceOverflowUnderflow) {
     EXPECT_EQ(result1.delta_qty, 100);
 
     // Add a normal price
-    auto result2 = ask_side_->apply_update(Price(100.0), 200, 2);
+    auto result2 = ask_side_->apply_update(Price(100000000000), 200, 2);
     EXPECT_TRUE(result2.is_new_level);
 
     // Verify ordering is maintained
     EXPECT_EQ(ask_side_->size(), 2);
-    EXPECT_EQ(ask_side_->best()->price, Price(100.0));  // Lower price is best for asks
+    EXPECT_EQ(ask_side_->best()->price, Price(100000000000));  // Lower price is best for asks
 
     // Test bid side with extreme prices
     auto result3 = bid_side_->apply_update(min_price, 300, 1);
     EXPECT_TRUE(result3.is_new_level);
     EXPECT_EQ(result3.delta_qty, 300);
 
-    auto result4 = bid_side_->apply_update(Price(100.0), 400, 2);
+    auto result4 = bid_side_->apply_update(Price(100000000000), 400, 2);
     EXPECT_TRUE(result4.is_new_level);
 
     // Verify ordering is maintained
     EXPECT_EQ(bid_side_->size(), 2);
-    EXPECT_EQ(bid_side_->best()->price, Price(100.0));  // Higher price is best for bids
+    EXPECT_EQ(bid_side_->best()->price, Price(100000000000));  // Higher price is best for bids
 
     // Test price arithmetic near limits
     Price near_max(static_cast<int64_t>(max_safe_raw - 1000000000LL));  // Leave room for Price's scale
@@ -425,20 +458,20 @@ TEST_F(BookSideTest, SequenceNumberWraparound) {
     uint32_t near_max = std::numeric_limits<uint32_t>::max() - 10;
 
     // Add initial level
-    ask_side_->apply_update(Price(100.0), 100, near_max);
+    ask_side_->apply_update(Price(100000000000), 100, near_max);
 
     // Verify initial state
-    auto* node = ask_side_->find(Price(100.0));
+    auto* node = ask_side_->find(Price(100000000000));
     ASSERT_NE(node, nullptr);
     EXPECT_EQ(node->update_seq, near_max);
 
     // Update several times approaching wraparound
     for (uint32_t i = 1; i <= 10; ++i) {
         uint32_t seq = near_max + i;
-        ask_side_->apply_update(Price(100.0), 100 + i, seq);
+        ask_side_->apply_update(Price(100000000000), 100 + i, seq);
 
         // Verify update was applied
-        node = ask_side_->find(Price(100.0));
+        node = ask_side_->find(Price(100000000000));
         ASSERT_NE(node, nullptr);
         EXPECT_EQ(node->quantity, static_cast<uint64_t>(100 + i));
         EXPECT_EQ(node->update_seq, seq);
@@ -446,9 +479,9 @@ TEST_F(BookSideTest, SequenceNumberWraparound) {
 
     // Continue past wraparound point
     for (uint32_t i = 0; i < 10; ++i) {
-        ask_side_->apply_update(Price(100.0), 200 + i, i);
+        ask_side_->apply_update(Price(100000000000), 200 + i, i);
 
-        node = ask_side_->find(Price(100.0));
+        node = ask_side_->find(Price(100000000000));
         ASSERT_NE(node, nullptr);
         EXPECT_EQ(node->quantity, static_cast<uint64_t>(200 + i));
         EXPECT_EQ(node->update_seq, i);  // Wrapped around
@@ -459,15 +492,17 @@ TEST_F(BookSideTest, SequenceNumberWraparound) {
 
     // Add levels with sequences near max
     for (int i = 0; i < 5; ++i) {
-        ask_side_->apply_update(Price(100.0 + i * 0.1), 1000 + i, near_max - i);
+        // Use raw values: 100.0 = 100000000000, 0.1 = 100000000
+        ask_side_->apply_update(Price(100000000000 + i * 100000000), 1000 + i, near_max - i);
     }
 
     // Update all levels past wraparound
     for (int i = 0; i < 5; ++i) {
         uint32_t wrapped_seq = i;  // Sequences 0-4 after wraparound
-        ask_side_->apply_update(Price(100.0 + i * 0.1), 2000 + i, wrapped_seq);
+        // Use raw values: 100.0 = 100000000000, 0.1 = 100000000
+        ask_side_->apply_update(Price(100000000000 + i * 100000000), 2000 + i, wrapped_seq);
 
-        auto* level = ask_side_->find(Price(100.0 + i * 0.1));
+        auto* level = ask_side_->find(Price(100000000000 + i * 100000000));
         ASSERT_NE(level, nullptr);
         EXPECT_EQ(level->update_seq, wrapped_seq);
     }
@@ -491,7 +526,8 @@ TEST_F(BookSideTest, CacheLocalityPattern) {
 
     // Create price levels
     for (size_t i = 0; i < NUM_LEVELS; ++i) {
-        ask_side_->apply_update(Price(100.0 + i * 0.01), 100 + i, i);
+        // Use raw values: 100.0 = 100000000000, 0.01 = 10000000
+        ask_side_->apply_update(Price(100000000000 + i * 10000000), 100 + i, i);
     }
 
     // Warm up caches

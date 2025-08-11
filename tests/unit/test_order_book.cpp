@@ -779,8 +779,8 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
     {
         // Price uses int64_t internally with scale 10^9
         // Smallest representable price is 1e-9
-        Price tiny_price(0.000000001);   // 1 nano-unit
-        Price tiny_price2(0.000000002);  // 2 nano-units
+        Price tiny_price(1);   // 1 nano-unit (raw value)
+        Price tiny_price2(2);  // 2 nano-units (raw value)
 
         book.update(Side::BUY, tiny_price, 1000000);
         book.update(Side::SELL, tiny_price2, 2000000);
@@ -788,7 +788,7 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
         const auto& tob = book.top_of_book();
         EXPECT_EQ(tob.bid_price, tiny_price);
         EXPECT_EQ(tob.ask_price, tiny_price2);
-        EXPECT_EQ(tob.spread(), Price(0.000000001));
+        EXPECT_EQ(tob.spread(), Price(1));  // 1 nano-unit difference
         EXPECT_TRUE(tob.valid());
     }
 
@@ -818,8 +818,8 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
     {
         // Test that we can represent 9 decimal places accurately
         book.clear();
-        Price precise1(1.123456789);
-        Price precise2(1.123456790);  // Differs by 1 nano-unit
+        Price precise1 = Price::from_string("1.123456789");
+        Price precise2 = Price::from_string("1.123456790");  // Differs by 1 nano-unit
 
         book.update(Side::BUY, precise1, 100);
         book.update(Side::SELL, precise2, 200);
@@ -827,7 +827,7 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
         const auto& tob = book.top_of_book();
         EXPECT_EQ(tob.bid_price, precise1);
         EXPECT_EQ(tob.ask_price, precise2);
-        EXPECT_EQ(tob.spread(), Price(0.000000001));
+        EXPECT_EQ(tob.spread(), Price(1));  // 1 nano-unit difference
     }
 
     // Test 4: Zero price handling
@@ -836,17 +836,17 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
 
         // Zero price with non-zero quantity creates a level
         // (BookSide doesn't reject zero prices)
-        book.update(Side::BUY, Price(0.0), 100);
-        EXPECT_FALSE(book.empty());  // Level is added with zero price
+        book.update(Side::BUY, Price(0), 100);  // Zero price
+        EXPECT_FALSE(book.empty());             // Level is added with zero price
         EXPECT_EQ(book.bid_depth(), 1);
 
         // Clear and add valid prices
         book.clear();
-        book.update(Side::BUY, Price(100.0), 1000);
-        book.update(Side::SELL, Price(101.0), 2000);
+        book.update(Side::BUY, Price::from_string("100.0"), 1000);
+        book.update(Side::SELL, Price::from_string("101.0"), 2000);
 
         // Update quantity to zero - should remove the level
-        book.update(Side::BUY, Price(100.0), 0);
+        book.update(Side::BUY, Price::from_string("100.0"), 0);
         EXPECT_EQ(book.bid_depth(), 0);
 
         const auto& tob = book.top_of_book();
@@ -858,17 +858,17 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
         book.clear();
 
         // Add multiple extreme price levels
-        book.update(Side::BUY, Price(0.000001), 1000000);  // $0.000001
-        book.update(Side::BUY, Price(0.01), 10000);        // $0.01
-        book.update(Side::BUY, Price(1.0), 1000);          // $1
-        book.update(Side::BUY, Price(1000.0), 10);         // $1,000
-        book.update(Side::BUY, Price(1'000'000.0), 1);     // $1M
+        book.update(Side::BUY, Price::from_string("0.000001"), 1000000);  // $0.000001
+        book.update(Side::BUY, Price::from_string("0.01"), 10000);        // $0.01
+        book.update(Side::BUY, Price::from_string("1.0"), 1000);          // $1
+        book.update(Side::BUY, Price::from_string("1000.0"), 10);         // $1,000
+        book.update(Side::BUY, Price::from_string("1000000.0"), 1);       // $1M
 
-        book.update(Side::SELL, Price(0.000002), 2000000);  // $0.000002
-        book.update(Side::SELL, Price(0.02), 20000);        // $0.02
-        book.update(Side::SELL, Price(2.0), 2000);          // $2
-        book.update(Side::SELL, Price(2000.0), 20);         // $2,000
-        book.update(Side::SELL, Price(2'000'000.0), 2);     // $2M
+        book.update(Side::SELL, Price::from_string("0.000002"), 2000000);  // $0.000002
+        book.update(Side::SELL, Price::from_string("0.02"), 20000);        // $0.02
+        book.update(Side::SELL, Price::from_string("2.0"), 2000);          // $2
+        book.update(Side::SELL, Price::from_string("2000.0"), 20);         // $2,000
+        book.update(Side::SELL, Price::from_string("2000000.0"), 2);       // $2M
 
         // Verify book maintains correct ordering across extreme ranges
         EXPECT_EQ(book.bid_depth(), 5);
@@ -876,8 +876,8 @@ TEST_F(OrderBookTest, PriceEdgeCasesWithOverflow) {
 
         // Best bid should be highest price, best ask should be lowest
         const auto& tob = book.top_of_book();
-        EXPECT_EQ(tob.bid_price, Price(1'000'000.0));
-        EXPECT_EQ(tob.ask_price, Price(0.000002));
+        EXPECT_EQ(tob.bid_price, Price::from_string("1000000.0"));
+        EXPECT_EQ(tob.ask_price, Price::from_string("0.000002"));
         // TOB is not valid because bid > ask (crossed book)
         EXPECT_FALSE(tob.valid());
         EXPECT_TRUE(book.is_crossed());

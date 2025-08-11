@@ -306,7 +306,14 @@ TEST_F(TimestampTest, RdtscpVsRdtscLatency) {
     // RDTSCP should be slightly slower due to serialization
     // But both should be very fast
     EXPECT_GE(rdtscp_p50, rdtsc_p50);
-    EXPECT_LT(rdtscp_p50, rdtsc_p50 * 3);  // Should not be more than 3x slower
+
+    // Skip the relative comparison if rdtsc_p50 is 0 (too fast to measure)
+    if (rdtsc_p50 > 0) {
+        EXPECT_LT(rdtscp_p50, rdtsc_p50 * 3);  // Should not be more than 3x slower
+    } else {
+        // Both are too fast to measure - just verify rdtscp is not unreasonably slow
+        EXPECT_LT(rdtscp_p50, 100u);  // Should still be under 100 cycles
+    }
 }
 
 // Test edge cases

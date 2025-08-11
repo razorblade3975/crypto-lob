@@ -46,27 +46,29 @@ TEST_F(PriceTest, RawValueConstruction) {
 }
 
 TEST_F(PriceTest, DoubleConstruction) {
-    Price p1(1.0);
+    // Note: Price constructor takes raw int64_t, not double
+    // For doubles, use Price::from_string() or provide raw value
+    Price p1 = Price::from_string("1.0");
     EXPECT_EQ(p1.raw_value(), 1'000'000'000);
     EXPECT_DOUBLE_EQ(p1.to_double(), 1.0);
 
-    Price p2(0.123456789);
+    Price p2 = Price::from_string("0.123456789");
     EXPECT_EQ(p2.raw_value(), 123'456'789);
     EXPECT_TRUE(near_equal(p2.to_double(), 0.123456789));
 
-    Price p3(1234.567890123);  // More than 9 decimal places
+    Price p3 = Price::from_string("1234.567890123");  // More than 9 decimal places
     EXPECT_TRUE(near_equal(p3.to_double(), 1234.567890123, 1e-8));
 }
 
 TEST_F(PriceTest, NegativePrices) {
-    Price p1(-1.0);
+    Price p1 = Price::from_string("-1.0");
     EXPECT_EQ(p1.raw_value(), -1'000'000'000);
     EXPECT_TRUE(p1.is_negative());
     EXPECT_FALSE(p1.is_positive());
     EXPECT_FALSE(p1.is_zero());
     EXPECT_EQ(p1.to_string(), "-1");
 
-    Price p2(-0.000000001);  // -1 satoshi
+    Price p2 = Price::from_string("-0.000000001");  // -1 satoshi
     EXPECT_EQ(p2.raw_value(), -1);
     EXPECT_EQ(p2.to_string(), "-0.000000001");
 }
