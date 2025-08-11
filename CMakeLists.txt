@@ -56,6 +56,7 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 find_package(simdjson REQUIRED)
 find_package(tomlplusplus REQUIRED)
+find_package(spdlog REQUIRED)
 
 # Optional: Find NUMA library for NUMA-aware memory pools
 find_library(NUMA_LIBRARY numa)
@@ -79,6 +80,7 @@ target_link_libraries(crypto_lob_core
         Threads::Threads
         simdjson::simdjson
         tomlplusplus::tomlplusplus
+        spdlog::spdlog
 )
 
 target_include_directories(crypto_lob_core
@@ -110,6 +112,7 @@ if(BUILD_TESTS)
         Threads::Threads
         simdjson::simdjson
         tomlplusplus::tomlplusplus
+        spdlog::spdlog
         GTest::gtest
         GTest::gtest_main
     )
