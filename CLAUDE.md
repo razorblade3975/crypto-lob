@@ -14,3 +14,4 @@
 - When planning, always think hard to present multiple options as you can. Don't rush to fix. Ultrathink and compare pros and cons of each option.
 - Always run code and build in the dev docker container `crypto-lob-dev`, and use @scripts/build.sh to build.
 - We should never use try-catch except in test cases, given this is a HFT low latency application. Use std::terminate to fail fast.
+- To compile, run: docker exec crypto-lob-dev bash -c "cd /workspace && ./scripts/build.sh -t Debug"
