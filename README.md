@@ -1,55 +1,70 @@
-# Crypto LOB (Limit Order Book)
+# Crypto LOB (Limit Order Book) Builder
 
-A high-performance cryptocurrency market data provider system designed for ultra-low latency trading applications. Built with C++20 and optimized for deterministic performance in high-frequency trading environments.
+A high-performance cryptocurrency order book builder designed for ultra-low latency parsing and bookkeeping of exchange market data. Built with C++20 and optimized for deterministic performance in high-frequency trading environments.
+
+## 🎯 Project Focus
+
+This system is a **crypto order book builder** that collects real-time market data updates from cryptocurrency exchanges and maintains accurate, low-latency internal order books. The architecture prioritizes microsecond-level latency with a target of <50μs wire-to-book processing time.
 
 ## 🚀 Features
 
-- **Ultra-Low Latency**: Optimized for sub-microsecond processing times
-- **Lock-Free Architecture**: Thread-local memory pools with ABA-protected operations
-- **Multi-Exchange Support**: Binance, OKX, KuCoin WebSocket feeds (planned)
-- **Financial Precision**: 128-bit fixed-point arithmetic for accurate price calculations
-- **NUMA-Aware**: Optimized for multi-socket server architectures
-- **Zero-Copy Design**: Minimal memory allocations on hot paths
-- **High-Performance Order Book**: Lock-free book sides with intrusive RB-tree and O(1) lookups
+- **Ultra-Low Latency**: <50μs wire-to-book processing target
+- **Lock-Free Architecture**: SPSC ring buffers for thread communication
+- **Thread-Per-Component Model**: Dedicated cores for connector, parser, and order book threads
+- **Zero-Copy Design**: Pre-allocated memory pools, no allocations on hot path
+- **High-Performance Parsing**: simdjson for <0.5μs JSON parsing
+- **Cache-Optimized**: Data structures designed for CPU cache efficiency
+- **Fail-Fast Philosophy**: std::terminate instead of exceptions for HFT requirements
 
 ## 🏗️ Architecture
 
 ### Core Components
 
-- **Exchange Connectors**: Direct WebSocket interfaces with exchange-specific protocols
-- **Data Normalization**: High-speed JSON parsing using simdjson
-- **Order Book Engine**: Price-level order book reconstruction and maintenance (L2 data)
-- **IPC Publisher**: Lock-free shared memory communication for downstream consumers
+Following the single-responsibility principle, each component has one clear purpose:
+
+1. **Control Thread** - System orchestration and configuration management
+2. **Exchange Connectors** - WebSocket connections and raw message reception (e.g., `BinanceSpotConnector`)
+3. **Parser Threads** - JSON to normalized message translation (e.g., `BinanceSpotJsonParser`)
+4. **Order Book Engine** - Order book state management (`OrderBookManager` and `OrderBook`)
+
+### Thread Model
+
+```
+┌─────────────┐      SPSC Queue      ┌─────────────┐      SPSC Queue      ┌──────────────┐
+│  Connector  │ ──────────────────►  │   Parser    │ ──────────────────►  │ Order Book   │
+│  Thread     │    (RawMessage*)      │   Thread    │  (NormalizedMsg*)    │   Engine     │
+│  (Core 2)   │                       │  (Core 3)   │                       │  (Core 1)    │
+└─────────────┘                       └─────────────┘                       └──────────────┘
+```
 
 ### Performance Features
 
-- **Thread-Local Memory Pools**: O(1) allocation/deallocation with zero atomics
-- **128-bit Tagged Pointers**: ABA protection for lock-free operations
-- **Huge Page Support**: 2MB/1GB pages for reduced TLB misses
-- **Software Prefetching**: Optimized memory access patterns
-- **Branch Prediction Hints**: CPU pipeline optimization
-- **Dual-Index Order Book**: Intrusive RB-tree for ordering + hash map for O(1) lookups
-- **Cache-Aligned Data Structures**: 128-byte nodes with hot data in first cache line
+- **Lock-Free SPSC Queues**: Zero-contention message passing between threads
+- **Memory Pools**: Pre-allocated `NormalizedMessage` objects
+- **Fixed-Point Arithmetic**: 10^9 scaled integer prices for precision
+- **Cache-Aligned Structures**: 64-byte aligned for optimal cache usage
+- **CPU Core Pinning**: Dedicated cores for each thread to avoid context switches
 
 ## 🛠️ Technology Stack
 
-- **Language**: C++20 (coroutines, constexpr, concepts)
-- **Compiler**: Clang 17+ with libc++ (optimized for HFT workloads)
-- **Build System**: CMake with Conan package management
-- **JSON Parsing**: simdjson (hot path), RapidJSON (outbound)
-- **WebSockets**: Boost.Beast with Asio
-- **Configuration**: TOML++ for human-readable configs
-- **Platform**: Linux (epoll, huge pages, NUMA APIs)
+- **Language**: C++20 (templates, concepts, constexpr)
+- **Compiler**: Clang 17+ with libc++
+- **Build System**: CMake with Conan 2.0
+- **Configuration**: tomlplusplus
+- **Logging**: spdlog (asynchronous)
+- **JSON Parsing**: simdjson
+- **WebSocket**: Boost.Beast
+- **Platform**: Linux (optimized for server deployment)
 
 ## 📦 Installation
 
 ### Prerequisites
 
-- **Compiler**: Clang 17+ (recommended) or GCC 13+ with full C++20 support
-  - Note: Clang is strongly preferred for HFT applications (see [CLAUDE.md](CLAUDE.md) for details)
-- CMake 3.20+
-- Conan 2.0+ package manager
-- Linux with huge page support
+- Docker (recommended) OR:
+  - Clang 17+ compiler
+  - CMake 3.20+
+  - Conan 2.0+
+  - Linux OS
 
 ### Build Instructions
 
@@ -63,22 +78,17 @@ cd crypto-lob
 # Build and start development container
 docker compose up -d crypto-lob-dev
 
-# Enter the container and build
-docker exec -it crypto-lob-dev bash
-cd /workspace
-./scripts/build.sh -t Release  # Or use -t Debug -s ASAN for debugging
+# Build the project
+docker exec crypto-lob-dev bash -c "cd /workspace && ./scripts/build.sh -t Debug"
 
 # Run tests
-cd build && ctest -V
-
-# Run benchmarks
-./crypto-lob-benchmarks
+docker exec crypto-lob-dev bash -c "cd /workspace/build && ./crypto-lob-tests"
 ```
 
 #### Native Build (Linux)
 
 ```bash
-# Install dependencies with Conan 2
+# Install dependencies
 conan install . --output-folder=build --build=missing \
       -s compiler=clang -s compiler.version=17 \
       -s compiler.libcxx=libc++ -s compiler.cppstd=20
@@ -87,203 +97,142 @@ conan install . --output-folder=build --build=missing \
 cd build
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake ..
-ninja -j$(nproc)  # Uses Ninja for faster builds
+ninja
 
 # Run tests
-ctest -V
-
-# Run benchmarks
-./crypto-lob-benchmarks
+./crypto-lob-tests
 ```
 
 ## ⚙️ Configuration
 
-### System Configuration (`config/system.toml`)
+### TOML Configuration Example
+
 ```toml
-[memory]
-enable_huge_pages = true
-thread_local_cache_size = 1024
-numa_aware = true
+# config.toml
+[system]
+log_level = "debug"  # debug, info, warn, error
+log_file = "/workspace/output/all.log"
 
-[performance]
-cpu_affinity = [1, 2, 3, 4]
-prefault_memory = true
-```
+[threading]
+# CPU core assignments (set to -1 for no pinning)
+control_thread_core = 0
+orderbook_thread_core = 1
 
-### Exchange Configuration (`config/exchanges.toml`)
-```toml
-[binance]
-enabled = true
-websocket_url = "wss://stream.binance.com:9443"
-ping_interval = 20
-
-[okx]
-enabled = true
-websocket_url = "wss://ws.okx.com:8443"
-```
-
-## 🎯 Usage
-
-### Basic Example
-
-```cpp
-#include "core/memory_pool.hpp"
-#include "core/price.hpp"
-#include "core/spsc_ring.hpp"
-
-// Order struct must be aligned for memory pool usage
-struct alignas(64) Order {
-    uint64_t order_id;
-    uint64_t instrument_id;
-    Price price;
-    uint64_t quantity;
-    uint64_t timestamp;
-    // ... padding to ensure 64+ bytes total size
-};
-
-int main() {
-    // Initialize memory pool for orders
-    MemoryPool<Order> pool(10000);
-    
-    // Create worker threads
-    std::vector<std::thread> workers;
-    std::atomic<bool> stop_flag{false};
-    
-    // Worker thread function
-    auto worker = [&pool, &stop_flag]() {
-        while (!stop_flag.load()) {
-            // Allocate orders from thread-local cache
-            auto* order = pool.construct(order_id, price, quantity);
-            // Process order...
-            pool.destroy(order);
-        }
-    };
-    
-    // Start workers
-    for (int i = 0; i < 4; ++i) {
-        workers.emplace_back(worker);
-    }
-    
-    // ... run application ...
-    
-    // Shutdown sequence (CRITICAL ORDER!)
-    stop_flag.store(true);              // 1. Signal workers to stop
-    for (auto& t : workers) t.join();   // 2. Wait for all threads
-    // 3. Pool destructor can now safely run
-    
-    return 0;
-}
-```
-
-### Performance Tuning
-
-```bash
-# Enable huge pages (requires root)
-echo 1024 > /proc/sys/vm/nr_hugepages
-
-# CPU isolation for latency-critical threads
-echo "isolcpus=1-7" >> /proc/cmdline
-
-# Run with NUMA binding
-numactl --cpubind=0 --membind=0 ./crypto-lob
+# Exchanges configuration
+[exchanges.binance_spot]
+connector_core = 2
+parser_core = 3
+websocket_url = "wss://stream.binance.com:9443/ws"
+reconnect_delay_ms = 1000
+max_reconnect_attempts = 10
+ping_interval_sec = 20
+subscriptions = [
+   "btcusdt@depth",
+   "ethusdt@depth",
+]
 ```
 
 ## 📊 Performance Characteristics
 
-| Operation | Latency | Throughput |
-|-----------|---------|------------|
-| Memory Pool Allocation | ~5ns | 200M ops/sec |
-| Price Conversion | ~10ns | 100M ops/sec |
-| SPSC Ring Push/Pop | ~15ns | 60M ops/sec |
-| JSON Parse (simdjson) | ~50ns/KB | 20GB/sec |
-| Order Book Update | ~100ns | 10M updates/sec |
+| Component | Latency | Notes |
+|-----------|---------|-------|
+| JSON Parsing (simdjson) | <0.5μs | Per message |
+| SPSC Queue Operation | ~20ns | Lock-free |
+| Memory Pool Allocation | ~100ns | Thread-local cache |
+| Order Book Update | <1μs | Cache-optimized |
+| End-to-End (wire-to-book) | <50μs | Target latency |
 
 ## 🧪 Testing
 
 ```bash
-# Unit tests (use build script for best results)
-./scripts/build.sh -t Debug -r  # Build and run tests
+# Run all unit tests
+./scripts/build.sh -t Debug -r
 
-# Memory safety with AddressSanitizer
+# Run with AddressSanitizer
 ./scripts/build.sh -t Debug -s ASAN -r
 
-# Thread safety with ThreadSanitizer  
+# Run with ThreadSanitizer
 ./scripts/build.sh -t Debug -s TSAN -r
 
-# Performance profiling (requires Linux perf tools)
-perf record ./build/crypto-lob-benchmarks
-perf report
-
-# Valgrind memory check (optional, slower than ASAN)
-valgrind --tool=memcheck ./build/crypto-lob-tests
+# Run specific test suite
+./build/crypto-lob-tests --gtest_filter=BinanceSpotParserTest.*
 ```
-
-### CI/CD Status
-[![CI](https://github.com/razorblade3975/crypto-lob/actions/workflows/ci.yml/badge.svg)](https://github.com/razorblade3975/crypto-lob/actions/workflows/ci.yml)
 
 ## 📈 Development Status
 
-### ✅ Completed
-- [x] Lock-free memory pool allocator with thread-local caching
-  - Fixed critical thread-local cache design flaw (July 2025)
-  - Implemented intrusive linked list for proper cache management
-  - One cache per thread per pool with automatic cleanup
-  - Fixed alignment requirements for benchmark compatibility
-- [x] Fixed-point price arithmetic with adaptive precision (128-bit)
-- [x] Cache alignment infrastructure with centralized constants
-- [x] Wait-free SPSC ring buffer using Disruptor pattern
-- [x] Lock-free order book side implementation
-  - Intrusive RB-tree for ordered traversal
-  - Boost unordered_flat_map for O(1) price lookups
-  - Top-N tracking for market data feeds
-  - Comprehensive test suite with fuzz testing
-- [x] Build system and project structure
-- [x] Docker development environment
-- [x] CI/CD pipeline with comprehensive testing
-  - Multi-configuration builds (Debug/Release, ASAN/TSAN)
-  - Automated code formatting checks
-  - Cross-platform compatibility (via Docker)
-- [x] Comprehensive documentation
+### ✅ Completed Components
 
-### 🚧 Next Steps (4-Week Implementation Plan)
+- **Core Infrastructure**
+  - [x] Lock-free SPSC ring buffer implementation
+  - [x] Thread-safe memory pool with pre-allocation
+  - [x] Fixed-point Price class (10^9 scaling)
+  - [x] RDTSC timestamp utilities for low-latency timing
+  
+- **Order Book Components**
+  - [x] BookSide implementation with RB-tree and hash map
+  - [x] OrderBook class with bid/ask integration
+  - [x] Top-of-book tracking and caching
+  
+- **Exchange Integration**
+  - [x] Parser base class with memory pool integration
+  - [x] BinanceSpotJsonParser implementation
+  - [x] NormalizedMessage and RawMessage structures
+  - [x] Comprehensive Binance parser tests (17 test cases)
 
-**Week 1 - Order Book Assembly:**
-- [ ] Complete Order Book implementation (bid/ask integration)
-- [ ] Exchange message types (Snapshot/Delta standardization)
-- [ ] Comprehensive order book unit tests
+- **Build & Testing**
+  - [x] CMake build system with Conan integration
+  - [x] Docker development environment
+  - [x] Comprehensive unit test suite (177 tests)
+  - [x] CI/CD pipeline with GitHub Actions
 
-**Week 2 - Exchange Integration:**
-- [ ] High-performance JSON parsing with simdjson
-- [ ] Exchange-specific parsers (Binance, KuCoin, OKX, Bitget, Bybit, Gate.io)
-- [ ] WebSocket client infrastructure with Boost.Beast
+### 🚧 In Progress
 
-**Week 3 - Processing Pipeline:**
-- [ ] Connection management with auto-reconnection
-- [ ] Synchronization engine for snapshot+delta reconciliation
-- [ ] Feed handler as main processing pipeline
+- **Exchange Connectors**
+  - [ ] WebSocket client base class
+  - [ ] BinanceSpotConnector implementation
+  - [ ] Reconnection and heartbeat logic
+  
+- **Order Book Engine**
+  - [ ] OrderBookManager implementation
+  - [ ] Sequence number validation
+  - [ ] Snapshot/delta synchronization
 
-**Week 4 - Production Ready:**
-- [ ] TOML-based configuration system
-- [ ] Monitoring and logging infrastructure
-- [ ] Integration testing and performance validation
+- **Control Thread**
+  - [ ] TOML configuration loading
+  - [ ] Component lifecycle management
+  - [ ] Thread affinity setting
 
-### 📋 Future Enhancements
-- [ ] IPC publisher with shared memory for downstream consumers
-- [ ] Advanced performance optimizations
-- [ ] Production monitoring and observability tools
+### 📋 Roadmap
+
+**Phase 1 - Core Pipeline (Current)**
+- Complete WebSocket connector infrastructure
+- Implement OrderBookManager with routing logic
+- Add control thread with basic lifecycle management
+
+**Phase 2 - Production Features**
+- Add monitoring and metrics collection
+- Implement graceful shutdown and recovery
+- Add support for multiple symbols per exchange
+
+**Phase 3 - Exchange Expansion**
+- Add support for additional exchanges (OKX, KuCoin)
+- Implement exchange-specific optimizations
+- Add futures/derivatives support
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch
+3. Make your changes with comprehensive tests
+4. Ensure all tests pass and code is formatted
+5. Submit a pull request
 
-### Code Standards
-- Follow C++20 best practices
-- Use `clang-format` for code formatting
-- Add comprehensive unit tests
+### Development Guidelines
+
+- Follow the architecture guide in `docs/arch_guide.md`
+- Use `clang-format-17` for code formatting
+- Write comprehensive unit tests for new features
+- Avoid dynamic allocations on the hot path
 - Document performance-critical sections
 
 ## 📄 License
@@ -294,15 +243,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [simdjson](https://github.com/simdjson/simdjson) for ultra-fast JSON parsing
 - [Boost.Beast](https://www.boost.org/doc/libs/master/libs/beast/) for WebSocket support
-- [TOML++](https://github.com/marzer/tomlplusplus) for configuration parsing
+- [tomlplusplus](https://github.com/marzer/tomlplusplus) for configuration parsing
+- [spdlog](https://github.com/gabime/spdlog) for high-performance logging
 
 ## 📞 Support
 
 For questions and support:
 - Create an [Issue](https://github.com/razorblade3975/crypto-lob/issues)
-- Check the [Documentation](./CLAUDE.md)
-- Review [Architecture Overview](./docs/Crypto%20Market%20Data%20Provider_.md)
+- Review the [Architecture Guide](./docs/arch_guide.md)
+- Check the [Development Notes](./CLAUDE.md)
 
 ---
 
-*Built with ⚡ for ultra-low latency cryptocurrency trading*
+*Built for ultra-low latency cryptocurrency order book management*
