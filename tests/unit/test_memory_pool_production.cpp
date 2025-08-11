@@ -264,7 +264,7 @@ TEST_P(ParameterizedMemoryPoolTest, MixedSizeAllocationStress) {
     MemoryPool<TinyObject> tiny_pool(params.capacity, PoolDepletionPolicy::THROW_EXCEPTION, config_);
     MemoryPool<MediumObject> medium_pool(params.capacity, PoolDepletionPolicy::THROW_EXCEPTION, config_);
     MemoryPool<LargeObject> large_pool(
-        std::max(params.capacity / 4, size_t{1}), PoolDepletionPolicy::THROW_EXCEPTION, config_);
+        std::max(params.capacity / 4, static_cast<size_t>(1)), PoolDepletionPolicy::THROW_EXCEPTION, config_);
 
     constexpr int num_threads = 2;  // Reduced for stability
     int operations_per_thread = std::max(1, static_cast<int>(params.capacity / num_threads / 3));
