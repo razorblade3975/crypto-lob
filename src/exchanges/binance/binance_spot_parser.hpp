@@ -1,0 +1,291 @@
+#pragma once
+
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <simdjson.h>
+#include <string>
+
+#include "../../core/instrument.hpp"
+#include "../../core/price.hpp"
+#include "../parser.hpp"
+
+namespace crypto_lob::exchanges::binance {
+
+using namespace crypto_lob::core;
+
+/**
+ * @brief Binance Spot market data parser
+ *
+ * Architecture alignment (Section 4):
+ * "BinanceSpotJsonParser: The concrete Parser that understands Binance
+ * Spot message format (JSON fields) and performs JSON parsing using simdjson."
+ *
+ * Parses Binance WebSocket messages:
+ * - Depth updates (order book snapshots)
+ * - Diff depth (incremental updates)
+ * - Trade streams
+ *
+ * Performance: Uses simdjson for ~5μs parsing latency
+ */
+class BinanceSpotJsonParser : public Parser {
+  public:
+    using Parser::Parser;  // Inherit constructor
+
+  protected:
+    /**
+     * @brief Parse Binance-specific JSON message
+     *
+     * Message types from Binance WebSocket:
+     * 1. Partial depth: {"lastUpdateId": 123, "bids": [...], "asks": [...]}
+     * 2. Diff depth: {"e": "depthUpdate", "E": 123456789, "s": "BTCUSDT",
+     *                 "U": 100, "u": 120, "b": [...], "a": [...]}
+     * 3. Trade: {"e": "trade", "E": 123456789, "s": "BTCUSDT",
+     *            "t": 12345, "p": "45000.00", "q": "0.001", ...}
+     */
+    bool parse_message(std::string_view json, NormalizedMessage& msg) override {
+        try {
+            // Parse JSON using simdjson
+            // The json string_view comes from RawMessage which has 64KB buffer with padding
+            // Use the 3-parameter version: data, length, capacity
+            simdjson::ondemand::document doc =
+                parser_.iterate(json.data(), json.size(), json.size() + simdjson::SIMDJSON_PADDING);
+
+            // Check if it's an event message (has "e" field)
+            std::string_view event_type;
+            if (doc["e"].get_string().get(event_type) == simdjson::SUCCESS) {
+                // Event message (diff depth or trade)
+                if (event_type == "depthUpdate") {
+                    return parse_depth_update(doc, msg);
+                } else if (event_type == "trade") {
+                    return parse_trade(doc, msg);
+                }
+            } else {
+                // No "e" field - check if it's a snapshot
+                if (doc["lastUpdateId"].error() == simdjson::SUCCESS) {
+                    return parse_snapshot(doc, msg);
+                }
+            }
+
+            return false;  // Unknown message type
+
+        } catch (...) {
+            // simdjson can throw on malformed JSON
+            return false;
+        }
+    }
+
+  private:
+    /**
+     * @brief Parse order book snapshot
+     *
+     * Format: {"lastUpdateId": 123, "bids": [["45000.00", "1.5"]],
+     *          "asks": [["45001.00", "2.0"]]}
+     */
+    bool parse_snapshot(simdjson::ondemand::document& doc, NormalizedMessage& msg) {
+        auto snapshot = SnapshotMessage{};
+
+        // Get update ID
+        uint64_t update_id;
+        if (doc["lastUpdateId"].get_uint64().get(update_id) != simdjson::SUCCESS) {
+            return false;
+        }
+        snapshot.update_id = update_id;
+
+        // Parse bids
+        simdjson::ondemand::array bids;
+        if (doc["bids"].get_array().get(bids) == simdjson::SUCCESS) {
+            for (auto bid : bids) {
+                if (snapshot.bid_count >= SnapshotMessage::MAX_LEVELS)
+                    break;
+
+                simdjson::ondemand::array level = bid;
+                auto iter = level.begin();
+
+                // Price
+                std::string_view price_str;
+                (*iter).get_string().get(price_str);
+
+                // Quantity
+                ++iter;
+                std::string_view qty_str;
+                (*iter).get_string().get(qty_str);
+                double qty = parse_double(qty_str);
+
+                snapshot.bids[snapshot.bid_count++] = PriceLevel(Price::from_string(price_str), scale_quantity(qty));
+            }
+        }
+
+        // Parse asks
+        simdjson::ondemand::array asks;
+        if (doc["asks"].get_array().get(asks) == simdjson::SUCCESS) {
+            for (auto ask : asks) {
+                if (snapshot.ask_count >= SnapshotMessage::MAX_LEVELS)
+                    break;
+
+                simdjson::ondemand::array level = ask;
+                auto iter = level.begin();
+
+                // Price
+                std::string_view price_str;
+                (*iter).get_string().get(price_str);
+
+                // Quantity
+                ++iter;
+                std::string_view qty_str;
+                (*iter).get_string().get(qty_str);
+                double qty = parse_double(qty_str);
+
+                snapshot.asks[snapshot.ask_count++] = PriceLevel(Price::from_string(price_str), scale_quantity(qty));
+            }
+        }
+
+        msg.type = MessageType::SNAPSHOT;
+        msg.data = std::move(snapshot);
+        return true;
+    }
+
+    /**
+     * @brief Parse incremental depth update
+     *
+     * Format: {"e": "depthUpdate", "E": 123456789, "s": "BTCUSDT",
+     *          "U": 100, "u": 120, "b": [...], "a": [...]}
+     */
+    bool parse_depth_update(simdjson::ondemand::document& doc, NormalizedMessage& msg) {
+        auto delta = DeltaMessage{};
+
+        // Get update IDs
+        doc["U"].get_uint64().get(delta.first_update_id);
+        doc["u"].get_uint64().get(delta.final_update_id);
+        // Event time not stored in base DeltaMessage
+
+        // Get symbol for instrument ID
+        std::string_view symbol;
+        doc["s"].get_string().get(symbol);
+        msg.instrument = InstrumentId(config_.exchange_id, symbol);
+
+        // Parse bid updates
+        simdjson::ondemand::array bids;
+        if (doc["b"].get_array().get(bids) == simdjson::SUCCESS) {
+            for (auto bid : bids) {
+                if (delta.bid_update_count >= DeltaMessage::MAX_UPDATES)
+                    break;
+
+                simdjson::ondemand::array level = bid;
+                auto iter = level.begin();
+
+                // Price
+                std::string_view price_str;
+                (*iter).get_string().get(price_str);
+
+                // Quantity
+                ++iter;
+                std::string_view qty_str;
+                (*iter).get_string().get(qty_str);
+                double qty = parse_double(qty_str);
+
+                delta.bid_updates[delta.bid_update_count++] =
+                    PriceLevel(Price::from_string(price_str), scale_quantity(qty));
+            }
+        }
+
+        // Parse ask updates
+        simdjson::ondemand::array asks;
+        if (doc["a"].get_array().get(asks) == simdjson::SUCCESS) {
+            for (auto ask : asks) {
+                if (delta.ask_update_count >= DeltaMessage::MAX_UPDATES)
+                    break;
+
+                simdjson::ondemand::array level = ask;
+                auto iter = level.begin();
+
+                // Price
+                std::string_view price_str;
+                (*iter).get_string().get(price_str);
+
+                // Quantity
+                ++iter;
+                std::string_view qty_str;
+                (*iter).get_string().get(qty_str);
+                double qty = parse_double(qty_str);
+
+                delta.ask_updates[delta.ask_update_count++] =
+                    PriceLevel(Price::from_string(price_str), scale_quantity(qty));
+            }
+        }
+
+        msg.type = MessageType::DELTA;
+        msg.data = std::move(delta);
+        return true;
+    }
+
+    /**
+     * @brief Parse trade message
+     *
+     * Format: {"e": "trade", "E": 123456789, "s": "BTCUSDT",
+     *          "t": 12345, "p": "45000.00", "q": "0.001",
+     *          "T": 123456789, "m": true}
+     */
+    bool parse_trade(simdjson::ondemand::document& doc, NormalizedMessage& msg) {
+        auto trade = TradeMessage{};
+
+        // Trade fields
+        doc["t"].get_uint64().get(trade.trade_id);
+        // Event time and trade time - store trade time as raw TSC value
+        uint64_t event_time_ms, trade_time_ms;
+        doc["E"].get_uint64().get(event_time_ms);
+        doc["T"].get_uint64().get(trade_time_ms);
+        // For now, just use the millisecond timestamp as-is
+        trade.timestamp = trade_time_ms;
+        doc["m"].get_bool().get(trade.is_buyer_maker);
+
+        // Price
+        std::string_view price_str;
+        doc["p"].get_string().get(price_str);
+        trade.price = Price::from_string(price_str);
+
+        // Quantity
+        std::string_view qty_str;
+        doc["q"].get_string().get(qty_str);
+        double qty = parse_double(qty_str);
+        trade.quantity = scale_quantity(qty);
+
+        // Symbol
+        std::string_view symbol;
+        doc["s"].get_string().get(symbol);
+        msg.instrument = InstrumentId(config_.exchange_id, symbol);
+
+        msg.type = MessageType::TRADE;
+        msg.data = std::move(trade);
+        return true;
+    }
+
+    /**
+     * @brief Fast string to double conversion
+     *
+     * Uses strtod for now (std::from_chars doesn't support double in libc++)
+     */
+    double parse_double(std::string_view str) {
+        // Create null-terminated string for strtod
+        char buffer[32];
+        size_t len = std::min(str.size(), sizeof(buffer) - 1);
+        std::memcpy(buffer, str.data(), len);
+        buffer[len] = '\0';
+        return std::strtod(buffer, nullptr);
+    }
+
+    /**
+     * @brief Scale quantity to avoid floating point
+     *
+     * Converts to integer representation (e.g., satoshis for BTC)
+     * For now, multiply by 1e8 for 8 decimal places
+     */
+    uint64_t scale_quantity(double qty) {
+        return static_cast<uint64_t>(qty * 100000000);
+    }
+
+    // simdjson parser instance (reusable for performance)
+    simdjson::ondemand::parser parser_;
+};
+
+}  // namespace crypto_lob::exchanges::binance
