@@ -140,16 +140,6 @@ class Price {
     constexpr explicit Price(int64_t raw_value) noexcept : value_(raw_value) {}
 
     /**
-     * @brief Construction from double precision floating-point
-     * @param price The price as a double value
-     * @details Converts double to fixed-point by multiplying by 10^9 and truncating
-     * @warning May introduce precision errors due to floating-point representation
-     * @warning Use from_string() for exact decimal input
-     * @note Constexpr enables compile-time construction for constant expressions
-     */
-    constexpr explicit Price(double price) noexcept : value_(static_cast<int64_t>(price * SCALE)) {}
-
-    /**
      * @brief Parse string representation with high precision
      * @param str String representation of price (e.g., "123.456789012")
      * @return Price object representing the parsed value
