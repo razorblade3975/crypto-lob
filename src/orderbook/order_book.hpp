@@ -35,16 +35,54 @@
 
 #include <array>
 #include <cstdint>
+#include <format>
 #include <vector>
 
 #include "core/cache.hpp"
-#include "core/enums.hpp"
+#include "core/instrument.hpp"
 #include "core/memory_pool.hpp"
 #include "core/price.hpp"
 #include "core/timestamp.hpp"
 #include "orderbook/book_side.hpp"
 
 namespace crypto_lob::core {
+
+/**
+ * @enum Side
+ * @brief Market side indicator for order book operations
+ *
+ * Represents whether an order or price level belongs to the buy side (bid)
+ * or sell side (ask) of the order book.
+ */
+enum class Side : uint8_t {
+    BUY = 0,  ///< Buy side (bid) - orders to purchase
+    SELL = 1  ///< Sell side (ask) - orders to sell
+};
+
+/**
+ * @enum UpdateType
+ * @brief Type of order book update message
+ *
+ * Distinguishes between full order book snapshots and incremental updates.
+ * Used by the message processing pipeline to determine how to apply updates.
+ */
+enum class UpdateType : uint8_t {
+    SNAPSHOT = 0,  ///< Full order book snapshot - replaces existing state
+    DELTA = 1      ///< Incremental update - modifies existing state
+};
+
+/**
+ * @enum EventType
+ * @brief Market event classification for output messages
+ *
+ * Categorizes the type of market event being published to consumers.
+ * Used by the IPC publisher to tag outgoing messages.
+ */
+enum class EventType : uint8_t {
+    TRADE = 0,        ///< Trade execution event
+    TOP_OF_BOOK = 1,  ///< Best bid/ask change event
+    LEVEL_UPDATE = 2  ///< Price level add/update/delete event
+};
 
 // Type aliases for bid and ask sides
 using AskSide = BookSide<AskComparator>;

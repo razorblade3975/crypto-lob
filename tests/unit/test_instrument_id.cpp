@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include "core/enums.hpp"
+#include "core/instrument.hpp"
 
 using namespace crypto_lob::core;
 

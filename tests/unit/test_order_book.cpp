@@ -6,7 +6,6 @@
 
 #include <gtest/gtest.h>
 
-#include "core/enums.hpp"
 #include "core/memory_pool.hpp"
 #include "core/price.hpp"
 #include "orderbook/order_book.hpp"
