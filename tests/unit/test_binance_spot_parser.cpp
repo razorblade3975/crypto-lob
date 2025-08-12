@@ -101,15 +101,15 @@ TEST_F(BinanceSpotParserTest, ParseSnapshot) {
     EXPECT_EQ(snapshot->bid_count, 2);
     if (snapshot->bid_count >= 2) {
         // Note: Price needs proper conversion method
-        EXPECT_EQ(snapshot->bids[0].quantity, 150000000);  // 1.5 * 1e8
-        EXPECT_EQ(snapshot->bids[1].quantity, 200000000);  // 2.0 * 1e8
+        EXPECT_EQ(snapshot->bids[0].quantity, Quantity::from_string("1.5"));  // 1.5
+        EXPECT_EQ(snapshot->bids[1].quantity, Quantity::from_string("2.0"));  // 2.0
     }
 
     // Verify ask levels
     EXPECT_EQ(snapshot->ask_count, 2);
     if (snapshot->ask_count >= 2) {
-        EXPECT_EQ(snapshot->asks[0].quantity, 100000000);  // 1.0 * 1e8
-        EXPECT_EQ(snapshot->asks[1].quantity, 250000000);  // 2.5 * 1e8
+        EXPECT_EQ(snapshot->asks[0].quantity, Quantity::from_string("1.0"));  // 1.0
+        EXPECT_EQ(snapshot->asks[1].quantity, Quantity::from_string("2.5"));  // 2.5
     }
 }
 
@@ -147,14 +147,14 @@ TEST_F(BinanceSpotParserTest, ParseDepthUpdate) {
     // Verify bid updates
     EXPECT_EQ(delta->bid_update_count, 2);
     if (delta->bid_update_count >= 2) {
-        EXPECT_EQ(delta->bid_updates[0].quantity, 0);          // Deletion
-        EXPECT_EQ(delta->bid_updates[1].quantity, 500000000);  // 5.0 * 1e8
+        EXPECT_EQ(delta->bid_updates[0].quantity, Quantity::from_string("0"));    // Deletion
+        EXPECT_EQ(delta->bid_updates[1].quantity, Quantity::from_string("5.0"));  // 5.0
     }
 
     // Verify ask updates
     EXPECT_EQ(delta->ask_update_count, 1);
     if (delta->ask_update_count >= 1) {
-        EXPECT_EQ(delta->ask_updates[0].quantity, 0);  // Deletion
+        EXPECT_EQ(delta->ask_updates[0].quantity, Quantity::from_string("0"));  // Deletion
     }
 }
 
@@ -184,7 +184,7 @@ TEST_F(BinanceSpotParserTest, ParseTrade) {
 
     // Verify trade fields
     EXPECT_EQ(trade->trade_id, 123456789);
-    EXPECT_EQ(trade->quantity, 12345678);  // 0.12345678 * 1e8
+    EXPECT_EQ(trade->quantity, Quantity::from_string("0.12345678"));  // 0.12345678
     EXPECT_TRUE(trade->is_buyer_maker);
 }
 
@@ -760,8 +760,8 @@ TEST_F(BinanceSpotParserTest, QuantityParsingEdgeCases) {
     ASSERT_TRUE(parser_->parse_message(zero_qty, msg));
     auto* delta = std::get_if<DeltaMessage>(&msg.data);
     ASSERT_NE(delta, nullptr);
-    EXPECT_EQ(delta->bid_updates[0].quantity, 0u);
-    EXPECT_EQ(delta->ask_updates[0].quantity, 0u);
+    EXPECT_EQ(delta->bid_updates[0].quantity, Quantity::from_string("0"));
+    EXPECT_EQ(delta->ask_updates[0].quantity, Quantity::from_string("0"));
 
     // Test very large quantity
     const char* large_qty = R"({
@@ -779,7 +779,7 @@ TEST_F(BinanceSpotParserTest, QuantityParsingEdgeCases) {
     auto* trade = std::get_if<TradeMessage>(&msg.data);
     ASSERT_NE(trade, nullptr);
     // Should handle large quantities
-    EXPECT_GT(trade->quantity, 0u);
+    EXPECT_GT(trade->quantity, Quantity::from_string("0"));
 
     // Test very small quantity
     const char* tiny_qty = R"({
@@ -796,7 +796,7 @@ TEST_F(BinanceSpotParserTest, QuantityParsingEdgeCases) {
     ASSERT_TRUE(parser_->parse_message(tiny_qty, msg));
     trade = std::get_if<TradeMessage>(&msg.data);
     ASSERT_NE(trade, nullptr);
-    EXPECT_EQ(trade->quantity, 1u);  // 0.00000001 * 1e8 = 1
+    EXPECT_EQ(trade->quantity, Quantity::from_string("0.00000001"));  // 0.00000001
 }
 
 // Test 19: Multiple Message Types in Sequence

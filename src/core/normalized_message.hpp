@@ -16,10 +16,10 @@ enum class MessageType : uint8_t { SNAPSHOT = 0, DELTA = 1, TRADE = 2, UNKNOWN =
 // Price level for order book
 struct PriceLevel {
     Price price;
-    uint64_t quantity;  // Scaled by 10^8 for precision
+    Quantity quantity;  // Fixed-point representation with 9 decimal places
 
     constexpr PriceLevel() noexcept = default;
-    constexpr PriceLevel(Price p, uint64_t q) noexcept : price(p), quantity(q) {}
+    constexpr PriceLevel(Price p, Quantity q) noexcept : price(p), quantity(q) {}
 };
 
 // Snapshot message containing full order book state
@@ -62,11 +62,11 @@ struct DeltaMessage {
 struct TradeMessage {
     uint64_t trade_id;
     Price price;
-    uint64_t quantity;   // Scaled by 10^8
+    Quantity quantity;   // Fixed-point representation with 9 decimal places
     uint64_t timestamp;  // TSC or epoch timestamp
     bool is_buyer_maker;
 
-    constexpr TradeMessage() noexcept : trade_id(0), price{}, quantity(0), timestamp{}, is_buyer_maker(false) {}
+    constexpr TradeMessage() noexcept : trade_id(0), price{}, quantity{}, timestamp{}, is_buyer_maker(false) {}
 };
 
 // Normalized message - common format for all exchanges
