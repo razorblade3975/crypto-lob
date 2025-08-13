@@ -53,6 +53,7 @@ endif()
 
 # Find required packages
 find_package(Boost REQUIRED COMPONENTS system)
+find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(simdjson REQUIRED)
 find_package(tomlplusplus REQUIRED)
@@ -70,13 +71,17 @@ endif()
 # Include directories
 include_directories(src)
 
-# Core library - header-only for now
-add_library(crypto_lob_core INTERFACE)
+# Core library
+add_library(crypto_lob_core STATIC
+    src/core/configuration.cpp
+)
 
 target_link_libraries(crypto_lob_core 
-    INTERFACE
+    PUBLIC
         Boost::boost
         Boost::system
+        OpenSSL::SSL
+        OpenSSL::Crypto
         Threads::Threads
         simdjson::simdjson
         tomlplusplus::tomlplusplus
@@ -84,7 +89,7 @@ target_link_libraries(crypto_lob_core
 )
 
 target_include_directories(crypto_lob_core
-    INTERFACE
+    PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
         $<INSTALL_INTERFACE:include>
 )
@@ -92,27 +97,49 @@ target_include_directories(crypto_lob_core
 # Main executable
 add_executable(crypto-lob src/main.cpp)
 target_link_libraries(crypto-lob 
-    Boost::boost
-    Boost::system
-    Threads::Threads
-    simdjson::simdjson
-    tomlplusplus::tomlplusplus
+    crypto_lob_core
 )
+
+# Example programs
+file(GLOB EXAMPLE_SOURCES "src/examples/*.cpp")
+foreach(example_source ${EXAMPLE_SOURCES})
+    get_filename_component(example_name ${example_source} NAME_WE)
+    add_executable(${example_name} ${example_source})
+    
+    # Link against crypto_lob_core for configuration example
+    if(${example_name} STREQUAL "configuration_example")
+        target_link_libraries(${example_name}
+            crypto_lob_core
+        )
+    else()
+        target_link_libraries(${example_name}
+            Boost::boost
+            Boost::system
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            Threads::Threads
+            simdjson::simdjson
+            tomlplusplus::tomlplusplus
+            spdlog::spdlog
+        )
+    endif()
+    
+    target_include_directories(${example_name}
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+endforeach()
 
 # Tests
 if(BUILD_TESTS)
     enable_testing()
     find_package(GTest REQUIRED)
     
+    # Unit tests
     file(GLOB_RECURSE TEST_SOURCES "tests/unit/*.cpp")
     add_executable(crypto-lob-tests ${TEST_SOURCES})
     target_link_libraries(crypto-lob-tests 
-        Boost::boost
-        Boost::system
-        Threads::Threads
-        simdjson::simdjson
-        tomlplusplus::tomlplusplus
-        spdlog::spdlog
+        crypto_lob_core
         GTest::gtest
         GTest::gtest_main
     )
@@ -130,11 +157,39 @@ if(BUILD_TESTS)
     
     add_test(NAME crypto-lob-tests COMMAND crypto-lob-tests)
     
+    # Integration tests
+    file(GLOB_RECURSE INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
+    if(INTEGRATION_TEST_SOURCES)
+        add_executable(crypto-lob-integration-tests ${INTEGRATION_TEST_SOURCES})
+        target_link_libraries(crypto-lob-integration-tests
+            crypto_lob_core
+            GTest::gtest
+            GTest::gtest_main
+        )
+        
+        # Link NUMA library if found
+        if(NUMA_LIBRARY)
+            target_link_libraries(crypto-lob-integration-tests ${NUMA_LIBRARY})
+        endif()
+        
+        target_include_directories(crypto-lob-integration-tests
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+        )
+        
+        add_test(NAME crypto-lob-integration-tests COMMAND crypto-lob-integration-tests)
+    endif()
+    
     # Configure TSAN suppression file if ThreadSanitizer is enabled
     if(ENABLE_SANITIZERS STREQUAL "TSAN")
         set_tests_properties(crypto-lob-tests PROPERTIES
             ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/config/tsan.suppressions"
         )
+        if(INTEGRATION_TEST_SOURCES)
+            set_tests_properties(crypto-lob-integration-tests PROPERTIES
+                ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/config/tsan.suppressions"
+            )
+        endif()
     endif()
 endif()
 
