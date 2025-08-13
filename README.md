@@ -30,11 +30,11 @@ Following the single-responsibility principle, each component has one clear purp
 ### Thread Model
 
 ```
-┌─────────────┐      SPSC Queue      ┌─────────────┐      SPSC Queue      ┌──────────────┐
-│  Connector  │ ──────────────────►  │   Parser    │ ──────────────────►  │ Order Book   │
+┌─────────────┐      SPSC Queue       ┌─────────────┐      SPSC Queue      ┌──────────────┐
+│  Connector  │ ──────────────────►   │   Parser    │ ──────────────────►  │ Order Book   │
 │  Thread     │    (RawMessage*)      │   Thread    │  (NormalizedMsg*)    │   Engine     │
-│  (Core 2)   │                       │  (Core 3)   │                       │  (Core 1)    │
-└─────────────┘                       └─────────────┘                       └──────────────┘
+│  (Core A)   │                       │  (Core B)   │                      │  (Core C)    │
+└─────────────┘                       └─────────────┘                      └──────────────┘
 ```
 
 ### Performance Features
