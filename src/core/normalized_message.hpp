@@ -13,45 +13,43 @@ namespace crypto_lob::core {
 // Message types
 enum class MessageType : uint8_t { SNAPSHOT = 0, DELTA = 1, TRADE = 2, UNKNOWN = 255 };
 
-// Price level for order book
-struct PriceLevel {
+// Price level for order book messages
+struct MessagePriceLevel {
     Price price;
     Quantity quantity;  // Fixed-point representation with 9 decimal places
 
-    constexpr PriceLevel() noexcept = default;
-    constexpr PriceLevel(Price p, Quantity q) noexcept : price(p), quantity(q) {}
+    constexpr MessagePriceLevel() noexcept = default;
+    constexpr MessagePriceLevel(Price p, Quantity q) noexcept : price(p), quantity(q) {}
 };
 
 // Snapshot message containing full order book state
 struct SnapshotMessage {
     static constexpr size_t MAX_LEVELS = 20;
 
-    uint64_t update_id;
-    PriceLevel bids[MAX_LEVELS];
-    PriceLevel asks[MAX_LEVELS];
+    uint64_t last_update_id;
+    MessagePriceLevel bids[MAX_LEVELS];
+    MessagePriceLevel asks[MAX_LEVELS];
     size_t bid_count;
     size_t ask_count;
 
-    constexpr SnapshotMessage() noexcept : update_id(0), bids{}, asks{}, bid_count(0), ask_count(0) {}
+    constexpr SnapshotMessage() noexcept : last_update_id(0), bids{}, asks{}, bid_count(0), ask_count(0) {}
 };
 
 // Delta message containing incremental updates
 struct DeltaMessage {
     static constexpr size_t MAX_UPDATES = 100;
 
-    uint64_t update_id;
     uint64_t first_update_id;
-    uint64_t final_update_id;
+    uint64_t last_update_id;
 
-    PriceLevel bid_updates[MAX_UPDATES];
-    PriceLevel ask_updates[MAX_UPDATES];
+    MessagePriceLevel bid_updates[MAX_UPDATES];
+    MessagePriceLevel ask_updates[MAX_UPDATES];
     size_t bid_update_count;
     size_t ask_update_count;
 
     constexpr DeltaMessage() noexcept
-        : update_id(0),
-          first_update_id(0),
-          final_update_id(0),
+        : first_update_id(0),
+          last_update_id(0),
           bid_updates{},
           ask_updates{},
           bid_update_count(0),

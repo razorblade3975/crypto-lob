@@ -113,7 +113,7 @@ class BinanceSpotJsonParser : public Parser {
         if (obj["lastUpdateId"].get_uint64().get(update_id) != simdjson::SUCCESS) {
             return false;
         }
-        snapshot.update_id = update_id;
+        snapshot.last_update_id = update_id;
 
         // TODO: Symbol extraction for snapshots needs to be handled
         // since stream unwrapping is now done in connector
@@ -140,7 +140,7 @@ class BinanceSpotJsonParser : public Parser {
                 (*iter).get_string().get(qty_str);
                 Quantity qty = Quantity::from_string(qty_str);
 
-                snapshot.bids[snapshot.bid_count++] = PriceLevel(Price::from_string(price_str), qty);
+                snapshot.bids[snapshot.bid_count++] = MessagePriceLevel(Price::from_string(price_str), qty);
             }
         }
 
@@ -164,7 +164,7 @@ class BinanceSpotJsonParser : public Parser {
                 (*iter).get_string().get(qty_str);
                 Quantity qty = Quantity::from_string(qty_str);
 
-                snapshot.asks[snapshot.ask_count++] = PriceLevel(Price::from_string(price_str), qty);
+                snapshot.asks[snapshot.ask_count++] = MessagePriceLevel(Price::from_string(price_str), qty);
             }
         }
 
@@ -184,7 +184,7 @@ class BinanceSpotJsonParser : public Parser {
 
         // Get update IDs
         obj["U"].get_uint64().get(delta.first_update_id);
-        obj["u"].get_uint64().get(delta.final_update_id);
+        obj["u"].get_uint64().get(delta.last_update_id);
         // Event time not stored in base DeltaMessage
 
         // Get symbol for instrument ID
@@ -212,7 +212,7 @@ class BinanceSpotJsonParser : public Parser {
                 (*iter).get_string().get(qty_str);
                 Quantity qty = Quantity::from_string(qty_str);
 
-                delta.bid_updates[delta.bid_update_count++] = PriceLevel(Price::from_string(price_str), qty);
+                delta.bid_updates[delta.bid_update_count++] = MessagePriceLevel(Price::from_string(price_str), qty);
             }
         }
 
@@ -236,7 +236,7 @@ class BinanceSpotJsonParser : public Parser {
                 (*iter).get_string().get(qty_str);
                 Quantity qty = Quantity::from_string(qty_str);
 
-                delta.ask_updates[delta.ask_update_count++] = PriceLevel(Price::from_string(price_str), qty);
+                delta.ask_updates[delta.ask_update_count++] = MessagePriceLevel(Price::from_string(price_str), qty);
             }
         }
 

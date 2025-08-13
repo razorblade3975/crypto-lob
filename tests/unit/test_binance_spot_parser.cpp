@@ -95,7 +95,7 @@ TEST_F(BinanceSpotParserTest, ParseSnapshot) {
     ASSERT_NE(snapshot, nullptr);
 
     // Verify update ID
-    EXPECT_EQ(snapshot->update_id, 160);
+    EXPECT_EQ(snapshot->last_update_id, 160);
 
     // Verify bid levels
     EXPECT_EQ(snapshot->bid_count, 2);
@@ -142,7 +142,7 @@ TEST_F(BinanceSpotParserTest, ParseDepthUpdate) {
 
     // Verify update IDs
     EXPECT_EQ(delta->first_update_id, 157);
-    EXPECT_EQ(delta->final_update_id, 160);
+    EXPECT_EQ(delta->last_update_id, 160);
 
     // Verify bid updates
     EXPECT_EQ(delta->bid_update_count, 2);
@@ -538,7 +538,7 @@ TEST_F(BinanceSpotParserTest, SequenceNumberValidation) {
     auto* delta = std::get_if<DeltaMessage>(&msg.data);
     ASSERT_NE(delta, nullptr);
     EXPECT_EQ(delta->first_update_id, 100u);
-    EXPECT_EQ(delta->final_update_id, 105u);
+    EXPECT_EQ(delta->last_update_id, 105u);
 
     // Continuous update 106-110 (should be valid)
     const char* update2 = R"({
@@ -554,7 +554,7 @@ TEST_F(BinanceSpotParserTest, SequenceNumberValidation) {
     ASSERT_TRUE(parser_->parse_message(update2, msg));
     delta = std::get_if<DeltaMessage>(&msg.data);
     EXPECT_EQ(delta->first_update_id, 106u);
-    EXPECT_EQ(delta->final_update_id, 110u);
+    EXPECT_EQ(delta->last_update_id, 110u);
 
     // Gap in sequence (112-115, missing 111)
     const char* update3 = R"({
@@ -571,7 +571,7 @@ TEST_F(BinanceSpotParserTest, SequenceNumberValidation) {
     ASSERT_TRUE(parser_->parse_message(update3, msg));
     delta = std::get_if<DeltaMessage>(&msg.data);
     EXPECT_EQ(delta->first_update_id, 112u);
-    EXPECT_EQ(delta->final_update_id, 115u);
+    EXPECT_EQ(delta->last_update_id, 115u);
 
     // Test with overlapping sequence (should be handled by OrderBook)
     const char* update4 = R"({
@@ -587,7 +587,7 @@ TEST_F(BinanceSpotParserTest, SequenceNumberValidation) {
     ASSERT_TRUE(parser_->parse_message(update4, msg));
     delta = std::get_if<DeltaMessage>(&msg.data);
     EXPECT_EQ(delta->first_update_id, 114u);
-    EXPECT_EQ(delta->final_update_id, 118u);
+    EXPECT_EQ(delta->last_update_id, 118u);
 }
 
 // Test 16: Extreme Price Values
@@ -718,7 +718,7 @@ TEST_F(BinanceSpotParserTest, PartialMessageHandling) {
     ASSERT_TRUE(parser_->parse_message(extra_fields, msg));
     auto* snapshot = std::get_if<SnapshotMessage>(&msg.data);
     ASSERT_NE(snapshot, nullptr);
-    EXPECT_EQ(snapshot->update_id, 100u);
+    EXPECT_EQ(snapshot->last_update_id, 100u);
 
     // Test with nested JSON (should handle gracefully)
     const char* nested_json = R"({
